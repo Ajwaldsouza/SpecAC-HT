@@ -6,39 +6,108 @@ import json
 import time
 import threading
 
+# Function to wait for a response with timeout
+def read_with_timeout(ser, timeout=2):
+    start_time = time.time()
+    response = ''
+    while time.time() - start_time < timeout:
+        if ser.in_waiting > 0:
+            new_data = ser.readline().strip().decode('utf-8', errors='ignore')
+            response += new_data
+            if new_data.endswith('\n') or new_data.endswith('\r'):
+                break
+        time.sleep(0.1)
+    return response.strip()
+
 def main():
-    # Detect connected XIAO RP2040 boards
-    ports = list(serial.tools.list_ports.grep('VID:PID=2E8A:0005'))
+    # Detect all serial ports for more flexibility
+    available_ports = list(serial.tools.list_ports.comports())
+    
+    # First look for XIAO RP2040 boards
+    xiao_ports = list(serial.tools.list_ports.grep('VID:PID=2E8A:0005'))
+    
+    # If no XIAO boards found, ask user if they want to try all ports
+    if not xiao_ports and available_ports:
+        use_all_ports = messagebox.askyesno("No XIAO RP2040 boards detected", 
+                                            "No XIAO RP2040 boards were detected. Would you like to try connecting to all available serial ports?")
+        if use_all_ports:
+            ports_to_try = available_ports
+        else:
+            messagebox.showerror("Error", "No XIAO RP2040 boards detected.")
+            return
+    else:
+        ports_to_try = xiao_ports[:16]  # Limit to 16 boards
+    
     boards = []
     
-    # Establish serial connections for up to 16 boards
-    for port in ports[:16]:
+    # Establish serial connections
+    for port in ports_to_try:
         try:
-            ser = serial.Serial(port.device, 115200, timeout=1)
-            # Flush any pending data
-            ser.reset_input_buffer()
-            ser.reset_output_buffer()
+            # Try different common baud rates if the default doesn't work
+            baud_rates = [115200, 9600, 57600, 38400]
+            connected = False
             
-            # Test communication with a simple command
-            ser.write(b"PING\n")
-            response = ser.readline().strip().decode('utf-8', errors='ignore')
-            if not response.startswith("OK"):
-                messagebox.showwarning("Warning", f"Board at {port.device} did not respond correctly. It may not be programmed with the correct firmware.")
+            for baud in baud_rates:
+                try:
+                    ser = serial.Serial(port.device, baud, timeout=1)
+                    # Flush any pending data
+                    ser.reset_input_buffer()
+                    ser.reset_output_buffer()
+                    
+                    # Wait a moment for device to initialize
+                    time.sleep(0.5)
+                    
+                    # Look for initial "READY" message
+                    initial_response = read_with_timeout(ser, 1)
+                    if initial_response and "READY" in initial_response:
+                        print(f"Device at {port.device} is ready at {baud} baud")
+                        connected = True
+                        break
+                    
+                    # Test communication with different line endings
+                    for ending in [b"PING\n", b"PING\r\n", b"PING\r"]:
+                        ser.reset_input_buffer()
+                        ser.write(ending)
+                        response = read_with_timeout(ser, 1)
+                        
+                        if response and "OK" in response:
+                            print(f"Device at {port.device} responded correctly at {baud} baud")
+                            connected = True
+                            break
+                    
+                    if connected:
+                        break
+                    
+                    ser.close()
                 
-            boards.append({'serial_number': port.serial_number, 'ser': ser, 'status': 'connected'})
-            print(f"Connected to board {port.serial_number} at {port.device}")
+                except Exception as e:
+                    print(f"Failed with baud rate {baud}: {e}")
+            
+            if connected:
+                serial_number = getattr(port, 'serial_number', f"Port_{port.device.split('/')[-1]}")
+                boards.append({
+                    'serial_number': serial_number, 
+                    'ser': ser, 
+                    'status': 'connected',
+                    'port': port.device,
+                    'baud': baud
+                })
+                print(f"Connected to board at {port.device} - Serial: {serial_number}")
+            else:
+                print(f"Could not establish communication with device at {port.device}")
+        
         except serial.SerialException as e:
             print(f"Failed to open {port.device}: {e}")
             messagebox.showerror("Error", f"Serial connection failed for {port.device}: {e}")
     
-    # Check the number of connected boards and show a warning if not exactly 16
+    # Check the number of connected boards
     num_boards = len(boards)
     if num_boards == 0:
-        messagebox.showerror("Error", "No XIAO RP2040 boards detected.")
+        messagebox.showerror("Error", "No boards could be connected. Please check your connections and make sure the microcontroller code is uploaded correctly.")
         return
-    elif num_boards < 16:
-        messagebox.showwarning("Warning", f"Only {num_boards} board(s) detected out of 16.")
-
+    else:
+        messagebox.showinfo("Connection Status", f"Successfully connected to {num_boards} board(s).")
+        
     # Initialize the Tkinter GUI
     root = tk.Tk()
     root.title("LED Brightness Control")
@@ -70,9 +139,10 @@ def main():
     # Create GUI elements for each detected board
     for i, board in enumerate(boards):
         serial_number = board['serial_number']
+        port_info = board['port']
         
-        # Use LabelFrame with serial number as the title
-        board_frame = tk.LabelFrame(boards_frame, text=serial_number)
+        # Use LabelFrame with serial number and port as the title
+        board_frame = tk.LabelFrame(boards_frame, text=f"{serial_number} - {port_info}")
         board_frame.grid(row=0, column=i, padx=10, pady=10)
         
         # Add status indicator
@@ -94,12 +164,24 @@ def main():
         entries[serial_number] = board_entries
     
     # Function to send a command and get a response
-    def send_command(ser, command):
+    def send_command(ser, command, timeout=2):
         try:
             ser.reset_input_buffer()
-            ser.write((command + "\n").encode())
-            response = ser.readline().strip().decode('utf-8', errors='ignore')
-            return response
+            
+            # Try different line endings if needed
+            command_sent = False
+            for ending in ["\n", "\r\n", "\r"]:
+                try:
+                    ser.write((command + ending).encode())
+                    command_sent = True
+                    break
+                except:
+                    continue
+                    
+            if not command_sent:
+                return None
+                
+            return read_with_timeout(ser, timeout)
         except serial.SerialException as e:
             print(f"Serial error: {e}")
             return None
@@ -129,9 +211,12 @@ def main():
                 duties = [int((p / 100.0) * 4095) for p in percentages]
                 command = "SETALL " + " ".join(map(str, duties))
                 
+                status_label.config(text="Sending command...", fg="orange")
+                root.update_idletasks()  # Force GUI update
+                
                 response = send_command(ser, command)
                 
-                if response and response.startswith("OK"):
+                if response and "OK" in response:
                     status_label.config(text="Settings applied", fg="green")
                 else:
                     status_label.config(text="Command failed", fg="red")
@@ -198,6 +283,10 @@ def main():
     button_frame = tk.Frame(root)
     button_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=10)
     
+    # Add a reconnect button
+    reconnect_button = tk.Button(button_frame, text="Reconnect All", command=lambda: reconnect_boards())
+    reconnect_button.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
+    
     # Add all buttons with proper spacing
     save_button = tk.Button(button_frame, text="Save Settings", command=save_settings)
     save_button.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
@@ -207,6 +296,25 @@ def main():
     
     apply_button = tk.Button(button_frame, text="Apply Settings", command=apply_settings, bg="#a0d6b4")
     apply_button.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
+    
+    # Function to reconnect to boards
+    def reconnect_boards():
+        for board in boards:
+            if board['status'] == 'disconnected':
+                try:
+                    ser = serial.Serial(board['port'], board['baud'], timeout=1)
+                    ser.reset_input_buffer()
+                    ser.reset_output_buffer()
+                    
+                    response = send_command(ser, "PING")
+                    if response and "OK" in response:
+                        board['ser'] = ser
+                        board['status'] = 'connected'
+                        status_labels[board['serial_number']].config(text="Reconnected", fg="green")
+                    else:
+                        status_labels[board['serial_number']].config(text="Failed to reconnect", fg="red")
+                except Exception as e:
+                    print(f"Failed to reconnect to {board['port']}: {e}")
     
     # Start the GUI event loop
     root.mainloop()

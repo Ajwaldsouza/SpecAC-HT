@@ -1,6 +1,10 @@
-from machine import I2C, Pin
+from machine import I2C, Pin, UART
 from pca9685 import PCA9685
 import sys
+import time
+
+# Initialize UART for reliable serial communication
+uart = UART(0, baudrate=115200)  # Use the default UART on most boards
 
 # Initialize I2C and PCA9685
 i2c = I2C(0, scl=Pin(21), sda=Pin(20), freq=1000000)  # Adjust pins as needed
@@ -37,12 +41,40 @@ def handle_command(cmd):
     else:
         return "ERR_UNKNOWN_CMD"
 
+# Send an initial message to indicate the board is ready
+print("READY")
+
 # Main loop to listen for serial commands
 while True:
-    try:
-        line = sys.stdin.readline().strip()
-        if line:  # Only process non-empty lines
+    if uart.any():
+        # Read the incoming command
+        line = uart.readline()
+        if line:
+            line = line.decode('utf-8', 'ignore').strip()
             response = handle_command(line)
+            uart.write(response + "\r\n")
+            # Also print to standard output for compatibility
             print(response)
-    except Exception as e:
-        print(f"ERR: {str(e)}")
+    
+    # Alternative way to read from stdin for compatibility
+    try:
+        if sys.stdin.in_waiting > 0:
+            line = sys.stdin.readline().strip()
+            if line:
+                response = handle_command(line)
+                print(response)
+                sys.stdout.flush()  # Ensure the response is sent
+    except:
+        # Some MicroPython implementations don't support all these methods
+        try:
+            line = sys.stdin.readline()
+            if line:
+                line = line.strip()
+                response = handle_command(line)
+                print(response)
+                sys.stdout.flush()  # Ensure the response is sent
+        except:
+            pass
+    
+    # Small delay to prevent CPU overload
+    time.sleep(0.01)
