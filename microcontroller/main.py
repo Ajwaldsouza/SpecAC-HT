@@ -1,6 +1,7 @@
 # MicroPython script for XIAO RP2040 boards to control LEDs via PCA9685
 import time
 import sys
+import select
 from machine import Pin, I2C
 import pca9685
 
@@ -58,8 +59,11 @@ def main():
     print("Board controller ready")
     set_status_led(0, 1, 0)  # Green LED for ready state
     
+    poller = select.poll()
+    poller.register(sys.stdin, select.POLLIN)
+    
     while True:
-        if sys.stdin.in_waiting:
+        if poller.poll(0):  # Check if there's data to read (non-blocking)
             cmd = sys.stdin.readline()
             set_status_led(0, 0, 1)  # Blue for processing
             
@@ -71,7 +75,7 @@ def main():
                 set_status_led(1, 0, 0)  # Red for error
                 
             print(response)
-            time.sleep(0.1)  # Small delay
+        time.sleep(0.1)  # Small delay
 
 if __name__ == "__main__":
     try:
