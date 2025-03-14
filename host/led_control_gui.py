@@ -1,9 +1,10 @@
 #!/usr/bin/env python
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 import serial
 import threading
 import time
+import json
 from serial.tools import list_ports
 
 # Constants
@@ -122,6 +123,10 @@ class LEDControlGUI:
         
         ttk.Button(btn_frame, text="Scan for Boards", command=self.scan_boards).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="Apply All Settings", command=self.apply_all_settings).pack(side=tk.LEFT, padx=5)
+        
+        # Add Import/Export buttons
+        ttk.Button(btn_frame, text="Export Settings", command=self.export_settings).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Import Settings", command=self.import_settings).pack(side=tk.LEFT, padx=5)
         
         # Status bar
         self.status_var = tk.StringVar(value="Ready")
@@ -282,6 +287,100 @@ class LEDControlGUI:
                 error_count += 1
         
         self.status_var.set(f"Applied settings to {success_count} board(s), {error_count} error(s)")
+    
+    def export_settings(self):
+        """Export current LED settings to a text file"""
+        if not self.boards:
+            messagebox.showwarning("No Boards", "No boards available to export settings from.")
+            return
+            
+        try:
+            # Collect all settings
+            settings = {}
+            for board_idx in range(len(self.boards)):
+                board_settings = {}
+                for channel_name in LED_CHANNELS:
+                    try:
+                        value = int(self.led_entries[(board_idx, channel_name)].get())
+                        board_settings[channel_name] = value
+                    except (ValueError, KeyError):
+                        board_settings[channel_name] = 0
+                settings[f"board_{board_idx+1}"] = board_settings
+            
+            # Get file path from user
+            file_path = filedialog.asksaveasfilename(
+                defaultextension=".json",
+                filetypes=[("JSON files", "*.json"), ("Text files", "*.txt"), ("All files", "*.*")],
+                title="Save LED Settings"
+            )
+            
+            if not file_path:
+                return  # User canceled
+                
+            # Save to file
+            with open(file_path, 'w') as f:
+                json.dump(settings, f, indent=4)
+                
+            self.status_var.set(f"Settings exported to {file_path}")
+            messagebox.showinfo("Export Successful", f"Settings successfully exported to {file_path}")
+            
+        except Exception as e:
+            messagebox.showerror("Export Error", f"Error exporting settings: {str(e)}")
+            self.status_var.set(f"Export error: {str(e)}")
+    
+    def import_settings(self):
+        """Import LED settings from a text file and apply them"""
+        try:
+            # Get file path from user
+            file_path = filedialog.askopenfilename(
+                filetypes=[("JSON files", "*.json"), ("Text files", "*.txt"), ("All files", "*.*")],
+                title="Import LED Settings"
+            )
+            
+            if not file_path:
+                return  # User canceled
+                
+            # Read settings from file
+            with open(file_path, 'r') as f:
+                settings = json.load(f)
+            
+            # Validate imported data format
+            if not isinstance(settings, dict):
+                raise ValueError("Invalid settings file format")
+                
+            # Make sure we have boards to apply settings to
+            if not self.boards:
+                messagebox.showwarning("No Boards", "No boards connected to apply settings to.")
+                return
+                
+            # Apply settings to GUI entries
+            applied_count = 0
+            for board_key, board_settings in settings.items():
+                try:
+                    # Extract board index (format: "board_X")
+                    board_idx = int(board_key.split("_")[1]) - 1
+                    
+                    if board_idx < 0 or board_idx >= len(self.boards):
+                        continue  # Skip if board index is out of range
+                        
+                    for channel_name, value in board_settings.items():
+                        if channel_name in LED_CHANNELS and (board_idx, channel_name) in self.led_entries:
+                            self.led_entries[(board_idx, channel_name)].delete(0, tk.END)
+                            self.led_entries[(board_idx, channel_name)].insert(0, str(value))
+                            applied_count += 1
+                            
+                except (ValueError, IndexError, KeyError):
+                    continue  # Skip invalid entries
+            
+            self.status_var.set(f"Imported settings from {file_path}")
+            
+            if messagebox.askyesno("Apply Settings", 
+                                 f"Successfully loaded {applied_count} settings from file.\n\nDo you want to apply these settings to the boards now?"):
+                self.apply_all_settings()
+                
+        except Exception as e:
+            messagebox.showerror("Import Error", f"Error importing settings: {str(e)}")
+            self.status_var.set(f"Import error: {str(e)}")
 
 
 if __name__ == "__main__":
