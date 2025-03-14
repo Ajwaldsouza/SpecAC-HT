@@ -1,80 +1,81 @@
-from machine import I2C, Pin, UART
-from pca9685 import PCA9685
-import sys
+# MicroPython script for XIAO RP2040 boards to control LEDs via PCA9685
 import time
-
-# Initialize UART for reliable serial communication
-uart = UART(0, baudrate=115200)  # Use the default UART on most boards
+import sys
+from machine import Pin, I2C
+import pca9685
 
 # Initialize I2C and PCA9685
-i2c = I2C(0, scl=Pin(21), sda=Pin(20), freq=1000000)  # Adjust pins as needed
-pwm = PCA9685(i2c, address=0x40)
+i2c = I2C(1)  # Use appropriate I2C bus
+pwm = pca9685.PCA9685(i2c, address=0x40)
 pwm.freq(1000)  # Set PWM frequency to 1000 Hz
 
-# Channel mapping
-CHANNELS = {'UV': 0, 'FAR_RED': 1, 'RED': 2, 'WHITE': 3, 'GREEN': 4, 'BLUE': 5}
+# LED channel mapping
+CHANNELS = {
+    'UV': 0,
+    'FAR_RED': 1,
+    'RED': 2,
+    'WHITE': 3,
+    'GREEN': 4,
+    'BLUE': 5,
+}
 
-# Function to set all channels
-def set_all_duties(duties):
-    for i, duty in enumerate(duties):
-        pwm.duty(i, min(max(int(duty), 0), 4095))  # Ensure duty is 0-4095
-    return True
+# Status LED on XIAO RP2040
+led_r = Pin(Pin.board.LEDR, Pin.OUT, value=1)
+led_g = Pin(Pin.board.LEDG, Pin.OUT, value=1)
+led_b = Pin(Pin.board.LEDB, Pin.OUT, value=1)
 
-# Function to handle commands
-def handle_command(cmd):
-    cmd = cmd.strip()
-    if cmd.startswith("SETALL"):
-        try:
-            parts = cmd.split()
-            if len(parts) == 7:  # "SETALL" + 6 duty values
-                duties = [int(d) for d in parts[1:]]
-                if set_all_duties(duties):
-                    return "OK"
-                else:
-                    return "ERR_SET_FAILED"
-            else:
-                return "ERR_WRONG_PARAMS"
-        except ValueError:
-            return "ERR_INVALID_VALUE"
-    elif cmd == "PING":
-        return "OK"
-    else:
-        return "ERR_UNKNOWN_CMD"
+def set_status_led(r, g, b):
+    """Set the RGB LED status (0=on, 1=off due to active-low)"""
+    led_r.value(0 if r else 1)
+    led_g.value(0 if g else 1)
+    led_b.value(0 if b else 1)
 
-# Send an initial message to indicate the board is ready
-print("READY")
-
-# Main loop to listen for serial commands
-while True:
-    if uart.any():
-        # Read the incoming command
-        line = uart.readline()
-        if line:
-            line = line.decode('utf-8', 'ignore').strip()
-            response = handle_command(line)
-            uart.write(response + "\r\n")
-            # Also print to standard output for compatibility
-            print(response)
-    
-    # Alternative way to read from stdin for compatibility
+def parse_command(cmd):
+    """Parse the received command"""
     try:
-        if sys.stdin.in_waiting > 0:
-            line = sys.stdin.readline().strip()
-            if line:
-                response = handle_command(line)
-                print(response)
-                sys.stdout.flush()  # Ensure the response is sent
-    except:
-        # Some MicroPython implementations don't support all these methods
-        try:
-            line = sys.stdin.readline()
-            if line:
-                line = line.strip()
-                response = handle_command(line)
-                print(response)
-                sys.stdout.flush()  # Ensure the response is sent
-        except:
-            pass
+        parts = cmd.strip().split()
+        if parts[0] == "SETALL" and len(parts) == 7:
+            # Format: "SETALL d0 d1 d2 d3 d4 d5"
+            duty_values = [int(x) for x in parts[1:7]]
+            for i, duty in enumerate(duty_values):
+                pwm.duty(i, duty)
+            return True, "OK"
+        else:
+            return False, "Invalid command format"
+    except Exception as e:
+        return False, f"Error: {str(e)}"
+
+def blink_led(n=3):
+    """Blink the blue LED to indicate activity"""
+    for _ in range(n):
+        set_status_led(0, 0, 1)  # Blue on
+        time.sleep(0.1)
+        set_status_led(0, 0, 0)  # Blue off
+        time.sleep(0.1)
+
+def main():
+    """Main loop to listen for commands"""
+    print("Board controller ready")
+    set_status_led(0, 1, 0)  # Green LED for ready state
     
-    # Small delay to prevent CPU overload
-    time.sleep(0.01)
+    while True:
+        if sys.stdin.in_waiting:
+            cmd = sys.stdin.readline()
+            set_status_led(0, 0, 1)  # Blue for processing
+            
+            success, response = parse_command(cmd)
+            
+            if success:
+                set_status_led(0, 1, 0)  # Green for success
+            else:
+                set_status_led(1, 0, 0)  # Red for error
+                
+            print(response)
+            time.sleep(0.1)  # Small delay
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        set_status_led(1, 0, 0)  # Red for error
+        print(f"Fatal error: {str(e)}")
