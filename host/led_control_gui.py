@@ -400,11 +400,11 @@ class LEDControlGUI:
             return
         
         if self.master_on:
-            # Turn OFF all lights - save current values first
+            # Turn OFF all lights - keep UI values but send zeros to boards
             self.master_on = False
             self.master_button_var.set("All Lights ON")
             
-            # Save current values
+            # Save current values but don't change the UI
             self.saved_values = {}
             for board_idx in range(len(self.boards)):
                 for channel_name in LED_CHANNELS:
@@ -412,31 +412,25 @@ class LEDControlGUI:
                     if key in self.led_entries:
                         try:
                             self.saved_values[key] = self.led_entries[key].get()
-                            # Set entry to 0
-                            self.led_entries[key].delete(0, tk.END)
-                            self.led_entries[key].insert(0, "0")
                         except (ValueError, KeyError):
                             pass
             
-            # Apply the zeros to all boards
-            self.apply_all_settings()
-            self.status_var.set("All lights turned OFF")
+            # Send zeros to all boards without changing UI
+            success_count = 0
+            for board_idx in range(len(self.boards)):
+                if self.send_zeros_to_board(board_idx):
+                    success_count += 1
+                    
+            self.status_var.set(f"All lights turned OFF on {success_count}/{len(self.boards)} boards (settings preserved)")
             
         else:
-            # Turn ON all lights - restore saved values
+            # Turn ON all lights - apply the values already in the UI
             self.master_on = True
             self.master_button_var.set("All Lights OFF")
             
-            # Restore saved values
-            for key, value in self.saved_values.items():
-                if key in self.led_entries:
-                    board_idx, channel_name = key
-                    self.led_entries[key].delete(0, tk.END)
-                    self.led_entries[key].insert(0, value)
-            
-            # Apply the restored values
+            # Apply the values that are already in the UI
             self.apply_all_settings()
-            self.status_var.set("All lights restored to previous settings")
+            self.status_var.set("All lights restored to displayed settings")
     
     def toggle_scheduler(self):
         """Enable or disable the scheduler"""
