@@ -76,37 +76,46 @@ def parse_command(cmd):
     try:
         parts = cmd.strip().split()
         if not parts:
-            return False, "Empty command"
+            return False, "ERR:EMPTY"
             
         if parts[0] == "SETALL" and len(parts) == 7:
             # Format: "SETALL d0 d1 d2 d3 d4 d5"
             duty_values = [int(x) for x in parts[1:7]]
             for i, duty in enumerate(duty_values):
                 pwm.duty(i, duty)
+            print("OK")  # Make sure to print response
             return True, "OK"
         elif parts[0] == "FAN_SET" and len(parts) == 2:
             # Format: "FAN_SET percentage"
             percentage = int(parts[1])
             set_fan_speed(percentage)
+            print("OK")  # Make sure to print response
             return True, "OK"
         elif parts[0] == "FAN_ON":
             # Turn fan on at last speed or default
             if not fan_enabled:
                 set_fan_speed(50)  # Default to 50% if turning on
+            print("OK")  # Make sure to print response
             return True, "OK"
         elif parts[0] == "FAN_OFF":
             # Turn fan off
             set_fan_speed(0)
+            print("OK")  # Make sure to print response
             return True, "OK"
         elif parts[0] == "FAN_STATUS":
             # Return current fan status and speed
             current_duty = fan_pwm.duty_u16()
             speed_pct = int((current_duty / 65535) * 100)
-            return True, f"FAN:{speed_pct}:{pps}"
+            status_response = f"FAN:{speed_pct}:{pps}"
+            print(status_response)  # Make sure to print response
+            return True, status_response
         else:
-            return False, "Invalid command format"
+            print("ERR:INVALID_CMD")  # Make sure to print response
+            return False, "ERR:INVALID_CMD"
     except Exception as e:
-        return False, f"Error: {str(e)}"
+        err_msg = f"ERR:{str(e)}"
+        print(err_msg)  # Make sure to print response
+        return False, err_msg
 
 def blink_led(n=3):
     """Blink the blue LED to indicate activity"""
@@ -126,17 +135,19 @@ def main():
     
     while True:
         if poller.poll(0):  # Check if there's data to read (non-blocking)
-            cmd = sys.stdin.readline()
+            cmd = sys.stdin.readline().strip()
             set_status_led(0, 0, 1)  # Blue for processing
             
-            success, response = parse_command(cmd)
+            # Process command but don't print response here
+            # Response is printed in parse_command
+            success, _ = parse_command(cmd)
             
             if success:
                 set_status_led(0, 1, 0)  # Green for success
             else:
                 set_status_led(1, 0, 0)  # Red for error
-                
-            print(response)
+            
+            # No need for print(response) here since we already printed in parse_command
         time.sleep(0.1)  # Small delay
 
 if __name__ == "__main__":
@@ -144,4 +155,4 @@ if __name__ == "__main__":
         main()
     except Exception as e:
         set_status_led(1, 0, 0)  # Red for error
-        print(f"Fatal error: {str(e)}")
+        print(f"ERR:FATAL:{str(e)}")

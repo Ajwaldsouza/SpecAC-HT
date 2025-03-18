@@ -39,6 +39,7 @@ class BoardConnection:
         self.last_error = ""
         self.fan_speed = 0
         self.fan_enabled = False
+        self.max_retries = 3
         
     def connect(self):
         """Establish serial connection to the board"""
@@ -46,8 +47,16 @@ class BoardConnection:
             self.serial_conn = serial.Serial(
                 port=self.port,
                 baudrate=115200,
-                timeout=1
+                timeout=2,  # Increased timeout
+                write_timeout=2  # Added write timeout
             )
+            # Give device time to reset after connection
+            time.sleep(2)
+            
+            # Clear any initialization messages
+            if self.serial_conn.in_waiting > 0:
+                self.serial_conn.reset_input_buffer()
+                
             self.is_connected = True
             return True
         except serial.SerialException as e:
@@ -70,24 +79,46 @@ class BoardConnection:
         if not self.is_connected:
             if not self.connect():
                 return False, self.last_error
+        
+        retry_count = 0
+        while retry_count < self.max_retries:        
+            try:
+                # Format: "SETALL d0 d1 d2 d3 d4 d5\n"
+                command = "SETALL"
+                for val in duty_values:
+                    command += f" {val}"
+                command += "\n"
                 
-        try:
-            # Format: "SETALL d0 d1 d2 d3 d4 d5\n"
-            command = "SETALL"
-            for val in duty_values:
-                command += f" {val}"
-            command += "\n"
-            
-            self.serial_conn.write(command.encode('utf-8'))
-            response = self.serial_conn.readline().decode('utf-8').strip()
-            
-            if response == "OK":
-                return True, "Success"
-            else:
-                return False, f"Unexpected response: {response}"
-        except Exception as e:
-            self.is_connected = False
-            return False, str(e)
+                # Clear any pending data
+                if self.serial_conn.in_waiting > 0:
+                    self.serial_conn.reset_input_buffer()
+                
+                self.serial_conn.write(command.encode('utf-8'))
+                
+                # Wait for response with timeout
+                start_time = time.time()
+                while time.time() - start_time < 1.0:  # 1 second timeout
+                    if self.serial_conn.in_waiting > 0:
+                        response = self.serial_conn.readline().decode('utf-8').strip()
+                        if response == "OK":
+                            return True, "Success"
+                        elif response.startswith("ERR:"):
+                            return False, f"Error: {response}"
+                        else:
+                            return False, f"Unexpected response: {response}"
+                    time.sleep(0.1)
+                
+                retry_count += 1
+                if retry_count < self.max_retries:
+                    time.sleep(0.5)  # Wait before retry
+                else:
+                    return False, "Timeout waiting for response"
+                    
+            except Exception as e:
+                self.is_connected = False
+                return False, str(e)
+        
+        return False, "Max retries exceeded"
     
     def set_fan_speed(self, percentage):
         """Set the fan speed as a percentage"""
@@ -95,40 +126,86 @@ class BoardConnection:
             if not self.connect():
                 return False, self.last_error
                 
-        try:
-            command = f"FAN_SET {percentage}\n"
-            self.serial_conn.write(command.encode('utf-8'))
-            response = self.serial_conn.readline().decode('utf-8').strip()
-            
-            if response == "OK":
-                self.fan_speed = percentage
-                self.fan_enabled = percentage > 0
-                return True, "Success"
-            else:
-                return False, f"Unexpected response: {response}"
-        except Exception as e:
-            self.is_connected = False
-            return False, str(e)
+        retry_count = 0
+        while retry_count < self.max_retries:
+            try:
+                command = f"FAN_SET {percentage}\n"
+                
+                # Clear any pending data
+                if self.serial_conn.in_waiting > 0:
+                    self.serial_conn.reset_input_buffer()
+                
+                self.serial_conn.write(command.encode('utf-8'))
+                
+                # Wait for response with timeout
+                start_time = time.time()
+                while time.time() - start_time < 1.0:  # 1 second timeout
+                    if self.serial_conn.in_waiting > 0:
+                        response = self.serial_conn.readline().decode('utf-8').strip()
+                        if response == "OK":
+                            self.fan_speed = percentage
+                            self.fan_enabled = percentage > 0
+                            return True, "Success"
+                        elif response.startswith("ERR:"):
+                            return False, f"Error: {response}"
+                        else:
+                            return False, f"Unexpected response: {response}"
+                    time.sleep(0.1)
+                
+                retry_count += 1
+                if retry_count < self.max_retries:
+                    time.sleep(0.5)  # Wait before retry
+                else:
+                    return False, "Timeout waiting for response"
+                    
+            except Exception as e:
+                self.is_connected = False
+                return False, str(e)
+        
+        return False, "Max retries exceeded"
             
     def turn_fan_on(self):
         """Turn the fan on"""
         if not self.is_connected:
             if not self.connect():
                 return False, self.last_error
+        
+        retry_count = 0
+        while retry_count < self.max_retries:
+            try:
+                command = "FAN_ON\n"
                 
-        try:
-            command = "FAN_ON\n"
-            self.serial_conn.write(command.encode('utf-8'))
-            response = self.serial_conn.readline().decode('utf-8').strip()
-            
-            if response == "OK":
-                self.fan_enabled = True
-                return True, "Success"
-            else:
-                return False, f"Unexpected response: {response}"
-        except Exception as e:
-            self.is_connected = False
-            return False, str(e)
+                # Clear any pending data
+                if self.serial_conn.in_waiting > 0:
+                    self.serial_conn.reset_input_buffer()
+                
+                self.serial_conn.write(command.encode('utf-8'))
+                
+                # Wait for response with timeout
+                start_time = time.time()
+                while time.time() - start_time < 1.0:  # 1 second timeout
+                    if self.serial_conn.in_waiting > 0:
+                        response = self.serial_conn.readline().decode('utf-8').strip()
+                        if response == "OK":
+                            self.fan_enabled = True
+                            return True, "Success"
+                        elif response.startswith("ERR:"):
+                            return False, f"Error: {response}"
+                        else:
+                            return False, f"Unexpected response: {response}"
+                    time.sleep(0.1)
+                
+                retry_count += 1
+                if retry_count < self.max_retries:
+                    time.sleep(0.5)  # Wait before retry
+                else:
+                    return False, "Timeout waiting for response"
+                    
+            except Exception as e:
+                self.is_connected = False
+                return False, str(e)
+        
+        return False, "Max retries exceeded"
             
     def turn_fan_off(self):
         """Turn the fan off"""
@@ -136,20 +213,43 @@ class BoardConnection:
             if not self.connect():
                 return False, self.last_error
                 
-        try:
-            command = "FAN_OFF\n"
-            self.serial_conn.write(command.encode('utf-8'))
-            response = self.serial_conn.readline().decode('utf-8').strip()
-            
-            if response == "OK":
-                self.fan_enabled = False
-                self.fan_speed = 0
-                return True, "Success"
-            else:
-                return False, f"Unexpected response: {response}"
-        except Exception as e:
-            self.is_connected = False
-            return False, str(e)
+        retry_count = 0
+        while retry_count < self.max_retries:
+            try:
+                command = "FAN_OFF\n"
+                
+                # Clear any pending data
+                if self.serial_conn.in_waiting > 0:
+                    self.serial_conn.reset_input_buffer()
+                
+                self.serial_conn.write(command.encode('utf-8'))
+                
+                # Wait for response with timeout
+                start_time = time.time()
+                while time.time() - start_time < 1.0:  # 1 second timeout
+                    if self.serial_conn.in_waiting > 0:
+                        response = self.serial_conn.readline().decode('utf-8').strip()
+                        if response == "OK":
+                            self.fan_enabled = False
+                            self.fan_speed = 0
+                            return True, "Success"
+                        elif response.startswith("ERR:"):
+                            return False, f"Error: {response}"
+                        else:
+                            return False, f"Unexpected response: {response}"
+                    time.sleep(0.1)
+                
+                retry_count += 1
+                if retry_count < self.max_retries:
+                    time.sleep(0.5)  # Wait before retry
+                else:
+                    return False, "Timeout waiting for response"
+                    
+            except Exception as e:
+                self.is_connected = False
+                return False, str(e)
+        
+        return False, "Max retries exceeded"
 
 
 class LEDControlGUI:
@@ -166,7 +266,6 @@ class LEDControlGUI:
         self.boards = []
         self.board_frames = []
         self.led_entries = {}  # {(board_idx, channel): entry_widget}
-        
         # Track master light state
         self.master_on = True
         self.saved_values = {}  # To store values when turning off
