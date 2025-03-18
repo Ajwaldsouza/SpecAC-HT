@@ -299,7 +299,7 @@ class LEDControlGUI:
                 # Outside of ON period - save the settings but turn off LEDs
                 saved_values = {}
                 
-                # Save the current UI values for later use
+                # Save the current UI values for later use but don't change UI
                 for channel in LED_CHANNELS:
                     try:
                         saved_values[channel] = self.led_entries[(board_idx, channel)].get()
@@ -309,14 +309,13 @@ class LEDControlGUI:
                 # Store saved values
                 self.board_schedules[board_idx]["saved_values"] = saved_values
                 
-                # Send all zeros to the board (lights off)
-                success, message = board.send_command([0, 0, 0, 0, 0, 0])
+                # Send all zeros to the board (lights off) without changing UI
+                success = self.send_zeros_to_board(board_idx)
                 
                 if success:
                     self.status_var.set(f"Board {board_idx+1}: Settings saved, lights off (outside scheduled hours)")
                 else:
-                    messagebox.showerror(f"Error - Board {board_idx+1}", message)
-                    self.status_var.set(f"Board {board_idx+1}: Error - {message}")
+                    self.status_var.set(f"Board {board_idx+1}: Error turning lights off for schedule")
                     
                 return
         
@@ -384,19 +383,23 @@ class LEDControlGUI:
             off_time = self.board_schedules[board_idx].get("off_time", "20:00")
             
             if not self.is_time_between(current_time, on_time, off_time):
-                # Outside of ON period - we should turn off the LEDs
-                self.status_var.set(f"Board {board_idx+1}: Schedule enabled, outside ON hours - lights off")
+                # Outside of ON period - turn off lights but keep UI values
+                self.status_var.set(f"Board {board_idx+1}: Schedule enabled, outside ON hours - lights off but settings preserved")
                 
-                # Set all entries to 0 in the UI
-                for channel_name in LED_CHANNELS:
-                    key = (board_idx, channel_name)
-                    if key in self.led_entries:
-                        self.led_entries[key].delete(0, tk.END)
-                        self.led_entries[key].insert(0, "0")
-                
-                # Apply the settings (which will send zeros to the board)
-                self.apply_board_settings(board_idx)
+                # Send direct command to turn off LEDs without changing UI
+                self.send_zeros_to_board(board_idx)
     
+    def send_zeros_to_board(self, board_idx):
+        """Send zeros to the board without changing UI values"""
+        if board_idx >= len(self.boards):
+            return False
+            
+        board = self.boards[board_idx]
+        # Send command with all zeros directly
+        success, message = board.send_command([0, 0, 0, 0, 0, 0])
+        
+        return success
+
     def schedule_checker(self):
         """Background thread to check and apply scheduled settings"""
         while True:
