@@ -138,15 +138,6 @@ class LEDControlGUI:
         ttk.Button(btn_frame, text="Scan for Boards", command=self.scan_boards).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="Apply All Settings", command=self.apply_all_settings).pack(side=tk.LEFT, padx=5)
         
-        # Add Import/Export buttons
-        ttk.Button(btn_frame, text="Export Settings", command=self.export_settings).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_frame, text="Import Settings", command=self.import_settings).pack(side=tk.LEFT, padx=5)
-        
-        # Status bar
-        self.status_var = tk.StringVar(value="Ready")
-        status_bar = ttk.Label(main_frame, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W)
-        status_bar.grid(column=0, row=2, columnspan=2, sticky=(tk.W, tk.E))
-        
         # Scrollable area for board frames
         canvas_frame = ttk.Frame(main_frame)
         canvas_frame.grid(column=0, row=1, sticky=(tk.N, tk.W, tk.E, tk.S))
@@ -169,6 +160,18 @@ class LEDControlGUI:
         
         canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.BOTTOM, fill=tk.X)
+        
+        # Bottom frame for Import/Export buttons (moved from header)
+        bottom_frame = ttk.Frame(main_frame)
+        bottom_frame.grid(column=0, row=2, columnspan=2, sticky=(tk.W, tk.E))
+        
+        ttk.Button(bottom_frame, text="Export Settings", command=self.export_settings).pack(side=tk.LEFT, padx=5)
+        ttk.Button(bottom_frame, text="Import Settings", command=self.import_settings).pack(side=tk.RIGHT, padx=5)
+        
+        # Status bar (now at row 3 instead of row 2)
+        self.status_var = tk.StringVar(value="Ready")
+        status_bar = ttk.Label(main_frame, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W)
+        status_bar.grid(column=0, row=3, columnspan=2, sticky=(tk.W, tk.E))
         
         self.scrollable_frame = scrollable_frame
         self.scan_boards()
