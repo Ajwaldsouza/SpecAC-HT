@@ -281,6 +281,10 @@ class LEDControlGUI:
         self.scheduler_running = False
         self.scheduler_thread = None
         
+        # Pagination variables
+        self.current_page = 0
+        self.boards_per_page = 8
+        
         self.create_gui()
         self.start_scheduler()
         
@@ -324,29 +328,30 @@ class LEDControlGUI:
         ttk.Button(btn_frame, text="Scan for Boards", command=self.scan_boards).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="Apply All Settings", command=self.apply_all_settings).pack(side=tk.LEFT, padx=5)
         
-        # Scrollable area for board frames
-        canvas_frame = ttk.Frame(main_frame)
-        canvas_frame.grid(column=0, row=1, sticky=(tk.N, tk.W, tk.E, tk.S))
+        # Boards display area (2 rows x 4 columns grid)
+        boards_frame = ttk.Frame(main_frame)
+        boards_frame.grid(column=0, row=1, sticky=(tk.N, tk.W, tk.E, tk.S))
         main_frame.columnconfigure(0, weight=1)
         main_frame.rowconfigure(1, weight=1)
         
-        canvas = tk.Canvas(canvas_frame)
-        scrollbar = ttk.Scrollbar(canvas_frame, orient=tk.HORIZONTAL, command=canvas.xview)
-        scrollable_frame = ttk.Frame(canvas)
+        # Container frame for board frames
+        self.boards_container = ttk.Frame(boards_frame)
+        self.boards_container.pack(expand=True, fill=tk.BOTH, padx=10, pady=10)
         
-        scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(
-                scrollregion=canvas.bbox("all")
-            )
-        )
+        # Navigation frame for page buttons
+        nav_frame = ttk.Frame(boards_frame)
+        nav_frame.pack(fill=tk.X, pady=5)
         
-        canvas.create_window((0, 0), window=scrollable_frame, anchor=tk.NW)
-        canvas.configure(xscrollcommand=scrollbar.set)
+        # Page navigation buttons
+        self.prev_button = ttk.Button(nav_frame, text="Previous Page", command=self.prev_page)
+        self.prev_button.pack(side=tk.LEFT, padx=10)
         
-        canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-        scrollbar.pack(side=tk.BOTTOM, fill=tk.X)
+        self.page_label = ttk.Label(nav_frame, text="Page 1")
+        self.page_label.pack(side=tk.LEFT, padx=10)
         
+        self.next_button = ttk.Button(nav_frame, text="Next Page", command=self.next_page)
+        self.next_button.pack(side=tk.LEFT, padx=10)
+
         # Fan control frame (new)
         fan_frame = ttk.LabelFrame(main_frame, text="Fan Controls")
         fan_frame.grid(column=0, row=2, columnspan=2, sticky=(tk.W, tk.E), pady=10)
@@ -378,21 +383,145 @@ class LEDControlGUI:
         # Apply fan settings button
         ttk.Button(fan_frame, text="Apply Fan Settings", command=self.apply_fan_settings).grid(column=4, row=0, padx=10, pady=5)
         
-        # Bottom frame for Import/Export buttons (moved from header)
+        # Bottom frame for Import/Export buttons
         bottom_frame = ttk.Frame(main_frame)
         bottom_frame.grid(column=0, row=3, columnspan=2, sticky=(tk.W, tk.E), pady=5)
         
         ttk.Button(bottom_frame, text="Export Settings", command=self.export_settings).pack(side=tk.LEFT, padx=5)
         ttk.Button(bottom_frame, text="Import Settings", command=self.import_settings).pack(side=tk.RIGHT, padx=5)
         
-        # Status bar (now at row 4 instead of row 3)
+        # Status bar
         self.status_var = tk.StringVar(value="Ready")
         status_bar = ttk.Label(main_frame, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W)
         status_bar.grid(column=0, row=4, columnspan=2, sticky=(tk.W, tk.E))
         
-        self.scrollable_frame = scrollable_frame
         self.scan_boards()
+    
+    def next_page(self):
+        """Navigate to the next page of boards"""
+        max_pages = (len(self.boards) + self.boards_per_page - 1) // self.boards_per_page
+        if self.current_page < max_pages - 1:
+            self.current_page += 1
+            self.update_page_display()
+    
+    def prev_page(self):
+        """Navigate to the previous page of boards"""
+        if self.current_page > 0:
+            self.current_page -= 1
+            self.update_page_display()
+    
+    def update_page_display(self):
+        """Update the display to show the current page of boards"""
+        # Update page label
+        max_pages = max(1, (len(self.boards) + self.boards_per_page - 1) // self.boards_per_page)
+        self.page_label.config(text=f"Page {self.current_page + 1} of {max_pages}")
         
+        # Enable/disable navigation buttons as needed
+        self.prev_button.config(state=tk.NORMAL if self.current_page > 0 else tk.DISABLED)
+        self.next_button.config(state=tk.NORMAL if self.current_page < max_pages - 1 else tk.DISABLED)
+        
+        # Hide all board frames first
+        for frame in self.board_frames:
+            frame.grid_remove()
+        
+        # Show only the boards for the current page
+        start_idx = self.current_page * self.boards_per_page
+        for i in range(start_idx, min(start_idx + self.boards_per_page, len(self.board_frames))):
+            # Calculate the row and column (2 rows x 4 columns grid)
+            row = (i - start_idx) // 4
+            col = (i - start_idx) % 4
+            self.board_frames[i].grid(row=row, column=col, padx=5, pady=5)
+    
+    def create_board_frames(self):
+        """Create frames for each detected board"""
+        # Remove old frames
+        for frame in self.board_frames:
+            frame.destroy()
+        self.board_frames = []
+        
+        for i, board in enumerate(self.boards):
+            frame = ttk.LabelFrame(self.boards_container, text=f"Board {i+1}: {board.serial_number}")
+            self.board_frames.append(frame)
+            
+            # LED control section
+            led_control_frame = ttk.LabelFrame(frame, text="LED Controls")
+            led_control_frame.grid(column=0, row=0, padx=5, pady=5, sticky=(tk.W, tk.E))
+            
+            # Add header row for LED controls
+            ttk.Label(led_control_frame, text="LED Channel").grid(column=1, row=0, sticky=tk.W, padx=5)
+            ttk.Label(led_control_frame, text="Intensity (%)").grid(column=2, row=0, sticky=tk.W, padx=5)
+            
+            # Add LED controls for each channel
+            for row, (channel_name, channel_idx) in enumerate(LED_CHANNELS.items(), start=1):
+                color_frame = ttk.Frame(led_control_frame, width=20, height=20)
+                color_frame.grid(column=0, row=row, padx=5, pady=2)
+                color_label = tk.Label(color_frame, bg=LED_COLORS[channel_name], width=2)
+                color_label.pack(fill=tk.BOTH, expand=True)
+                
+                ttk.Label(led_control_frame, text=channel_name).grid(column=1, row=row, sticky=tk.W, padx=5)
+                
+                value_var = tk.StringVar(value="0")
+                entry = ttk.Spinbox(
+                    led_control_frame, 
+                    from_=0, 
+                    to=100, 
+                    width=5, 
+                    textvariable=value_var,
+                    validate='key',
+                    validatecommand=(self.root.register(self.validate_percentage), '%P')
+                )
+                entry.grid(column=2, row=row, sticky=tk.W, padx=5)
+                ttk.Label(led_control_frame, text="%").grid(column=3, row=row, sticky=tk.W)
+                
+                self.led_entries[(i, channel_name)] = entry
+            
+            # Scheduling section - one per board
+            schedule_frame = ttk.LabelFrame(frame, text="Board Schedule")
+            schedule_frame.grid(column=0, row=1, padx=5, pady=5, sticky=(tk.W, tk.E))
+            
+            # Create schedule controls
+            ttk.Label(schedule_frame, text="ON Time:").grid(column=0, row=0, padx=5, pady=5, sticky=tk.W)
+            on_time_var = tk.StringVar(value="08:00")
+            on_time = ttk.Entry(schedule_frame, width=7, textvariable=on_time_var)
+            on_time.grid(column=1, row=0, padx=5, pady=5)
+            self.board_time_entries[(i, "on")] = on_time
+            
+            ttk.Label(schedule_frame, text="OFF Time:").grid(column=2, row=0, padx=5, pady=5, sticky=tk.W)
+            off_time_var = tk.StringVar(value="20:00")
+            off_time = ttk.Entry(schedule_frame, width=7, textvariable=off_time_var)
+            off_time.grid(column=3, row=0, padx=5, pady=5)
+            self.board_time_entries[(i, "off")] = off_time
+            
+            # Schedule enable checkbox
+            schedule_var = tk.BooleanVar(value=False)
+            schedule_check = ttk.Checkbutton(
+                schedule_frame, 
+                text="Enable Scheduling",
+                variable=schedule_var,
+                command=lambda b_idx=i: self.update_board_schedule(b_idx)
+            )
+            schedule_check.grid(column=4, row=0, padx=10, pady=5, sticky=tk.W)
+            self.board_schedule_vars[i] = schedule_var
+            
+            # Initialize the schedule data for this board
+            self.board_schedules[i] = {
+                "on_time": "08:00",
+                "off_time": "20:00",
+                "enabled": False,
+                "saved_values": {}
+            }
+                
+            # Individual apply button
+            ttk.Button(
+                frame, 
+                text="Apply", 
+                command=lambda b_idx=i: self.apply_board_settings(b_idx)
+            ).grid(column=0, row=2, pady=10, sticky=(tk.W, tk.E))
+        
+        # Update the display to show the first page
+        self.current_page = 0
+        self.update_page_display()
+    
     def toggle_all_lights(self):
         """Toggle all lights on or off on all boards"""
         if not self.boards:
@@ -685,88 +814,6 @@ class LEDControlGUI:
         for port_info in list_ports.grep('VID:PID=2E8A:0005'):
             results.append([port_info.device, port_info.serial_number])
         return results
-    
-    def create_board_frames(self):
-        """Create frames for each detected board"""
-        for i, board in enumerate(self.boards):
-            frame = ttk.LabelFrame(self.scrollable_frame, text=f"Board {i+1}: {board.serial_number}")
-            frame.grid(column=i, row=0, padx=10, pady=10)
-            self.board_frames.append(frame)
-            
-            # LED control section
-            led_control_frame = ttk.LabelFrame(frame, text="LED Controls")
-            led_control_frame.grid(column=0, row=0, padx=5, pady=5, sticky=(tk.W, tk.E))
-            
-            # Add header row for LED controls
-            ttk.Label(led_control_frame, text="LED Channel").grid(column=1, row=0, sticky=tk.W, padx=5)
-            ttk.Label(led_control_frame, text="Intensity (%)").grid(column=2, row=0, sticky=tk.W, padx=5)
-            
-            # Add LED controls for each channel
-            for row, (channel_name, channel_idx) in enumerate(LED_CHANNELS.items(), start=1):
-                color_frame = ttk.Frame(led_control_frame, width=20, height=20)
-                color_frame.grid(column=0, row=row, padx=5, pady=2)
-                color_label = tk.Label(color_frame, bg=LED_COLORS[channel_name], width=2)
-                color_label.pack(fill=tk.BOTH, expand=True)
-                
-                ttk.Label(led_control_frame, text=channel_name).grid(column=1, row=row, sticky=tk.W, padx=5)
-                
-                value_var = tk.StringVar(value="0")
-                entry = ttk.Spinbox(
-                    led_control_frame, 
-                    from_=0, 
-                    to=100, 
-                    width=5, 
-                    textvariable=value_var,
-                    validate='key',
-                    validatecommand=(self.root.register(self.validate_percentage), '%P')
-                )
-                entry.grid(column=2, row=row, sticky=tk.W, padx=5)
-                ttk.Label(led_control_frame, text="%").grid(column=3, row=row, sticky=tk.W)
-                
-                self.led_entries[(i, channel_name)] = entry
-            
-            # Scheduling section - one per board
-            schedule_frame = ttk.LabelFrame(frame, text="Board Schedule")
-            schedule_frame.grid(column=0, row=1, padx=5, pady=5, sticky=(tk.W, tk.E))
-            
-            # Create schedule controls
-            ttk.Label(schedule_frame, text="ON Time:").grid(column=0, row=0, padx=5, pady=5, sticky=tk.W)
-            on_time_var = tk.StringVar(value="08:00")
-            on_time = ttk.Entry(schedule_frame, width=7, textvariable=on_time_var)
-            on_time.grid(column=1, row=0, padx=5, pady=5)
-            self.board_time_entries[(i, "on")] = on_time
-            
-            ttk.Label(schedule_frame, text="OFF Time:").grid(column=2, row=0, padx=5, pady=5, sticky=tk.W)
-            off_time_var = tk.StringVar(value="20:00")
-            off_time = ttk.Entry(schedule_frame, width=7, textvariable=off_time_var)
-            off_time.grid(column=3, row=0, padx=5, pady=5)
-            self.board_time_entries[(i, "off")] = off_time
-            
-            # Schedule enable checkbox
-            schedule_var = tk.BooleanVar(value=False)
-            schedule_check = ttk.Checkbutton(
-                schedule_frame, 
-                text="Enable Scheduling",
-                variable=schedule_var,
-                command=lambda b_idx=i: self.update_board_schedule(b_idx)
-            )
-            schedule_check.grid(column=4, row=0, padx=10, pady=5, sticky=tk.W)
-            self.board_schedule_vars[i] = schedule_var
-            
-            # Initialize the schedule data for this board
-            self.board_schedules[i] = {
-                "on_time": "08:00",
-                "off_time": "20:00",
-                "enabled": False,
-                "saved_values": {}
-            }
-                
-            # Individual apply button
-            ttk.Button(
-                frame, 
-                text="Apply", 
-                command=lambda b_idx=i: self.apply_board_settings(b_idx)
-            ).grid(column=0, row=2, pady=10, sticky=(tk.W, tk.E))
     
     def validate_percentage(self, value):
         """Validate that entry is a valid percentage (0-100)"""
