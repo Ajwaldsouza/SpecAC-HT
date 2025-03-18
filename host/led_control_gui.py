@@ -257,7 +257,7 @@ class LEDControlGUI:
     
     def __init__(self, root):
         self.root = root
-        self.root.title("LED Control System")
+        self.root.title("SpecAC-HT Control System")
         self.root.geometry("1200x800")
         
         self.style = ttk.Style()
