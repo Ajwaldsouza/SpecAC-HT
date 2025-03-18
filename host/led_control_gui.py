@@ -37,6 +37,8 @@ class BoardConnection:
         self.serial_conn = None
         self.is_connected = False
         self.last_error = ""
+        self.fan_speed = 0
+        self.fan_enabled = False
         
     def connect(self):
         """Establish serial connection to the board"""
@@ -86,6 +88,68 @@ class BoardConnection:
         except Exception as e:
             self.is_connected = False
             return False, str(e)
+    
+    def set_fan_speed(self, percentage):
+        """Set the fan speed as a percentage"""
+        if not self.is_connected:
+            if not self.connect():
+                return False, self.last_error
+                
+        try:
+            command = f"FAN_SET {percentage}\n"
+            self.serial_conn.write(command.encode('utf-8'))
+            response = self.serial_conn.readline().decode('utf-8').strip()
+            
+            if response == "OK":
+                self.fan_speed = percentage
+                self.fan_enabled = percentage > 0
+                return True, "Success"
+            else:
+                return False, f"Unexpected response: {response}"
+        except Exception as e:
+            self.is_connected = False
+            return False, str(e)
+            
+    def turn_fan_on(self):
+        """Turn the fan on"""
+        if not self.is_connected:
+            if not self.connect():
+                return False, self.last_error
+                
+        try:
+            command = "FAN_ON\n"
+            self.serial_conn.write(command.encode('utf-8'))
+            response = self.serial_conn.readline().decode('utf-8').strip()
+            
+            if response == "OK":
+                self.fan_enabled = True
+                return True, "Success"
+            else:
+                return False, f"Unexpected response: {response}"
+        except Exception as e:
+            self.is_connected = False
+            return False, str(e)
+            
+    def turn_fan_off(self):
+        """Turn the fan off"""
+        if not self.is_connected:
+            if not self.connect():
+                return False, self.last_error
+                
+        try:
+            command = "FAN_OFF\n"
+            self.serial_conn.write(command.encode('utf-8'))
+            response = self.serial_conn.readline().decode('utf-8').strip()
+            
+            if response == "OK":
+                self.fan_enabled = False
+                self.fan_speed = 0
+                return True, "Success"
+            else:
+                return False, f"Unexpected response: {response}"
+        except Exception as e:
+            self.is_connected = False
+            return False, str(e)
 
 
 class LEDControlGUI:
@@ -106,6 +170,10 @@ class LEDControlGUI:
         # Track master light state
         self.master_on = True
         self.saved_values = {}  # To store values when turning off
+        
+        # Track master fan state
+        self.fans_on = False
+        self.fan_speed_var = tk.StringVar(value="50")
         
         # Scheduling related variables - now at board level instead of channel level
         self.board_schedules = {}  # {board_idx: {"on_time": time, "off_time": time, "enabled": bool}}
@@ -180,17 +248,48 @@ class LEDControlGUI:
         canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.BOTTOM, fill=tk.X)
         
+        # Fan control frame (new)
+        fan_frame = ttk.LabelFrame(main_frame, text="Fan Controls")
+        fan_frame.grid(column=0, row=2, columnspan=2, sticky=(tk.W, tk.E), pady=10)
+        
+        # Fan toggle button
+        self.fan_button_var = tk.StringVar(value="Turn Fans ON")
+        fan_button = ttk.Button(
+            fan_frame,
+            textvariable=self.fan_button_var,
+            command=self.toggle_all_fans,
+            width=15
+        )
+        fan_button.grid(column=0, row=0, padx=10, pady=5)
+        
+        # Fan speed control
+        ttk.Label(fan_frame, text="Fan Speed:").grid(column=1, row=0, padx=(20, 5), pady=5)
+        fan_speed_entry = ttk.Spinbox(
+            fan_frame,
+            from_=0,
+            to=100,
+            width=5,
+            textvariable=self.fan_speed_var,
+            validate='key',
+            validatecommand=(self.root.register(self.validate_percentage), '%P')
+        )
+        fan_speed_entry.grid(column=2, row=0, padx=5, pady=5)
+        ttk.Label(fan_frame, text="%").grid(column=3, row=0, padx=(0, 5), pady=5)
+        
+        # Apply fan settings button
+        ttk.Button(fan_frame, text="Apply Fan Settings", command=self.apply_fan_settings).grid(column=4, row=0, padx=10, pady=5)
+        
         # Bottom frame for Import/Export buttons (moved from header)
         bottom_frame = ttk.Frame(main_frame)
-        bottom_frame.grid(column=0, row=2, columnspan=2, sticky=(tk.W, tk.E))
+        bottom_frame.grid(column=0, row=3, columnspan=2, sticky=(tk.W, tk.E), pady=5)
         
         ttk.Button(bottom_frame, text="Export Settings", command=self.export_settings).pack(side=tk.LEFT, padx=5)
         ttk.Button(bottom_frame, text="Import Settings", command=self.import_settings).pack(side=tk.RIGHT, padx=5)
         
-        # Status bar (now at row 3 instead of row 2)
+        # Status bar (now at row 4 instead of row 3)
         self.status_var = tk.StringVar(value="Ready")
         status_bar = ttk.Label(main_frame, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W)
-        status_bar.grid(column=0, row=3, columnspan=2, sticky=(tk.W, tk.E))
+        status_bar.grid(column=0, row=4, columnspan=2, sticky=(tk.W, tk.E))
         
         self.scrollable_frame = scrollable_frame
         self.scan_boards()
@@ -600,6 +699,78 @@ class LEDControlGUI:
         
         self.status_var.set(f"Applied settings to {success_count} board(s), {error_count} error(s)")
     
+    def toggle_all_fans(self):
+        """Toggle all fans on or off on all boards"""
+        if not self.boards:
+            messagebox.showwarning("No Boards", "No boards available to control fans.")
+            return
+            
+        if self.fans_on:
+            # Turn off all fans
+            self.fans_on = False
+            self.fan_button_var.set("Turn Fans ON")
+            
+            success_count = 0
+            for i, board in enumerate(self.boards):
+                success, message = board.turn_fan_off()
+                if success:
+                    success_count += 1
+                else:
+                    messagebox.showerror(f"Error - Board {i+1}", message)
+                
+            self.status_var.set(f"All fans turned OFF on {success_count}/{len(self.boards)} boards")
+            
+        else:
+            # Turn on all fans
+            self.fans_on = True
+            self.fan_button_var.set("Turn Fans OFF")
+            
+            # Get the speed from the entry
+            try:
+                speed = int(self.fan_speed_var.get())
+            except ValueError:
+                speed = 50  # Default to 50% if invalid
+                self.fan_speed_var.set("50")
+                
+            success_count = 0
+            for i, board in enumerate(self.boards):
+                success, message = board.set_fan_speed(speed)
+                if success:
+                    success_count += 1
+                else:
+                    messagebox.showerror(f"Error - Board {i+1}", message)
+                
+            self.status_var.set(f"All fans turned ON at {speed}% on {success_count}/{len(self.boards)} boards")
+    
+    def apply_fan_settings(self):
+        """Apply the fan speed to all boards"""
+        if not self.boards:
+            messagebox.showwarning("No Boards", "No boards available to control fans.")
+            return
+            
+        try:
+            speed = int(self.fan_speed_var.get())
+        except ValueError:
+            messagebox.showerror("Invalid Value", "Please enter a valid fan speed (0-100%).")
+            return
+            
+        success_count = 0
+        for i, board in enumerate(self.boards):
+            success, message = board.set_fan_speed(speed)
+            if success:
+                success_count += 1
+                # Update the fans_on flag if needed
+                if speed > 0 and not self.fans_on:
+                    self.fans_on = True
+                    self.fan_button_var.set("Turn Fans OFF")
+                elif speed == 0 and self.fans_on:
+                    self.fans_on = False
+                    self.fan_button_var.set("Turn Fans ON")
+            else:
+                messagebox.showerror(f"Error - Board {i+1}", message)
+                
+        self.status_var.set(f"Fan speed set to {speed}% on {success_count}/{len(self.boards)} boards")
+    
     def export_settings(self):
         """Export current LED settings and schedules to a text file"""
         if not self.boards:
@@ -610,7 +781,7 @@ class LEDControlGUI:
             # Collect all settings
             settings = {}
             for board_idx in range(len(self.boards)):
-                board_settings = {"intensity": {}, "schedule": {}}
+                board_settings = {"intensity": {}, "schedule": {}, "fan": {}}
                 
                 # Get intensity settings
                 for channel_name in LED_CHANNELS:
@@ -627,6 +798,12 @@ class LEDControlGUI:
                         "off_time": self.board_schedules[board_idx].get("off_time", "20:00"),
                         "enabled": self.board_schedules[board_idx].get("enabled", False)
                     }
+                
+                # Add fan settings
+                board_settings["fan"] = {
+                    "enabled": self.boards[board_idx].fan_enabled,
+                    "speed": self.boards[board_idx].fan_speed
+                }
                 
                 settings[f"board_{board_idx+1}"] = board_settings
             
@@ -678,6 +855,8 @@ class LEDControlGUI:
                 
             # Apply settings to GUI entries
             applied_count = 0
+            fan_settings_found = False
+            
             for board_key, board_settings in settings.items():
                 try:
                     # Extract board index (format: "board_X")
@@ -720,6 +899,25 @@ class LEDControlGUI:
                             })
                         
                         applied_count += 1
+                    
+                    # Apply fan settings if present
+                    if "fan" in board_settings:
+                        fan = board_settings["fan"]
+                        fan_settings_found = True
+                        
+                        # Only set the fan speed in the UI for the first board with settings
+                        if fan_settings_found and board_idx == 0:
+                            self.fan_speed_var.set(str(fan.get("speed", 50)))
+                            
+                            # Update fan button state
+                            if fan.get("enabled", False):
+                                self.fans_on = True
+                                self.fan_button_var.set("Turn Fans OFF")
+                            else:
+                                self.fans_on = False
+                                self.fan_button_var.set("Turn Fans ON")
+                        
+                        applied_count += 1
                             
                 except (ValueError, IndexError, KeyError):
                     continue  # Skip invalid entries
@@ -729,6 +927,10 @@ class LEDControlGUI:
             if messagebox.askyesno("Apply Settings", 
                                  f"Successfully loaded {applied_count} settings from file.\n\nDo you want to apply these settings to the boards now?"):
                 self.apply_all_settings()
+                
+                # Also apply fan settings if they were found
+                if fan_settings_found:
+                    self.apply_fan_settings()
                 
         except Exception as e:
             messagebox.showerror("Import Error", f"Error importing settings: {str(e)}")
