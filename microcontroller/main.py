@@ -2,6 +2,7 @@
 import time
 import sys
 import select
+import json
 from machine import Pin, I2C, PWM, Timer
 import pca9685
 
@@ -20,6 +21,9 @@ CHANNELS = {
     'BLUE': 5,
 }
 
+# Default LED duty values (all off by default)
+DEFAULT_DUTY_VALUES = [0, 0, 0, 0, 0, 0]
+
 # Initialize fan control
 fan_pwm = PWM(Pin.board.D1, freq=25_000, duty_u16=0)  # starts off
 fan_tach = Pin(Pin.board.D0, Pin.IN, Pin.PULL_UP)
@@ -29,6 +33,68 @@ tach = 0
 pps = 0
 tach_prev = 0
 fan_enabled = False
+
+# Persistent storage filename
+LED_STATE_FILE = "led_state.json"
+FAN_STATE_FILE = "fan_state.json"
+
+def save_led_state(duty_values):
+    """Save LED settings to persistent storage"""
+    try:
+        with open(LED_STATE_FILE, 'w') as f:
+            json.dump(duty_values, f)
+        return True
+    except:
+        return False
+
+def load_led_state():
+    """Load LED settings from persistent storage"""
+    try:
+        with open(LED_STATE_FILE, 'r') as f:
+            duty_values = json.load(f)
+        
+        # Validate the loaded values
+        if isinstance(duty_values, list) and len(duty_values) == 6:
+            # Make sure all values are integers and in valid range
+            valid_values = []
+            for val in duty_values:
+                if isinstance(val, (int, float)) and 0 <= val <= 4095:
+                    valid_values.append(int(val))
+                else:
+                    valid_values.append(0)
+            return valid_values
+    except:
+        pass
+    
+    # Return default values if file not found or invalid
+    return DEFAULT_DUTY_VALUES
+
+def save_fan_state(enabled, speed):
+    """Save fan settings to persistent storage"""
+    try:
+        fan_state = {"enabled": enabled, "speed": speed}
+        with open(FAN_STATE_FILE, 'w') as f:
+            json.dump(fan_state, f)
+        return True
+    except:
+        return False
+
+def load_fan_state():
+    """Load fan settings from persistent storage"""
+    try:
+        with open(FAN_STATE_FILE, 'r') as f:
+            fan_state = json.load(f)
+        
+        if isinstance(fan_state, dict) and "enabled" in fan_state and "speed" in fan_state:
+            enabled = bool(fan_state["enabled"])
+            speed = int(fan_state["speed"])
+            if 0 <= speed <= 100:
+                return enabled, speed
+    except:
+        pass
+    
+    # Return default values if file not found or invalid
+    return False, 0
 
 def tach_cb(p):
     """Callback for tachometer readings"""
@@ -69,7 +135,20 @@ def set_fan_speed(percentage):
     duty = int((percentage / 100.0) * 65535)
     fan_pwm.duty_u16(duty)
     fan_enabled = percentage > 0
+    
+    # Save current fan state to persistent storage
+    save_fan_state(fan_enabled, percentage)
+    
     return True
+
+def apply_led_settings(duty_values):
+    """Apply LED duty values and save them to persistent storage"""
+    for i, duty in enumerate(duty_values):
+        if i < 6:  # Make sure we don't exceed available channels
+            pwm.duty(i, duty)
+    
+    # Save the settings to persistent storage
+    save_led_state(duty_values)
 
 def parse_command(cmd):
     """Parse the received command"""
@@ -81,8 +160,8 @@ def parse_command(cmd):
         if parts[0] == "SETALL" and len(parts) == 7:
             # Format: "SETALL d0 d1 d2 d3 d4 d5"
             duty_values = [int(x) for x in parts[1:7]]
-            for i, duty in enumerate(duty_values):
-                pwm.duty(i, duty)
+            # Apply and save settings
+            apply_led_settings(duty_values)
             print("OK")  # Make sure to print response
             return True, "OK"
         elif parts[0] == "FAN_SET" and len(parts) == 2:
@@ -125,8 +204,32 @@ def blink_led(n=3):
         set_status_led(0, 0, 0)  # Blue off
         time.sleep(0.1)
 
+def initialize_system():
+    """Initialize the system with saved settings"""
+    # Indicate system is initializing
+    set_status_led(1, 1, 0)  # Yellow = initializing
+    
+    # Load and apply saved LED settings
+    duty_values = load_led_state()
+    for i, duty in enumerate(duty_values):
+        if i < 6:  # Make sure we don't exceed available channels
+            pwm.duty(i, duty)
+    
+    # Load and apply saved fan settings
+    fan_enabled, fan_speed = load_fan_state()
+    if fan_enabled:
+        set_fan_speed(fan_speed)
+    else:
+        set_fan_speed(0)
+    
+    # Blink to indicate initialization complete
+    blink_led(2)
+
 def main():
     """Main loop to listen for commands"""
+    # Initialize the system with saved settings
+    initialize_system()
+    
     print("Board controller ready")
     set_status_led(0, 1, 0)  # Green LED for ready state
     
