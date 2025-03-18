@@ -102,6 +102,10 @@ class LEDControlGUI:
         self.board_frames = []
         self.led_entries = {}  # {(board_idx, channel): entry_widget}
         
+        # Track master light state
+        self.master_on = True
+        self.saved_values = {}  # To store values when turning off
+        
         self.create_gui()
         
     def create_gui(self):
@@ -116,6 +120,16 @@ class LEDControlGUI:
         header_frame.grid(column=0, row=0, columnspan=2, sticky=(tk.W, tk.E))
         
         ttk.Label(header_frame, text="LED Control System", font=('Helvetica', 16, 'bold')).pack(side=tk.LEFT)
+        
+        # Master lights control button
+        self.master_button_var = tk.StringVar(value="All Lights OFF")
+        master_button = ttk.Button(
+            header_frame,
+            textvariable=self.master_button_var,
+            command=self.toggle_all_lights,
+            width=15
+        )
+        master_button.pack(side=tk.LEFT, padx=20)
         
         # Scan and Apply buttons
         btn_frame = ttk.Frame(header_frame)
@@ -159,6 +173,51 @@ class LEDControlGUI:
         self.scrollable_frame = scrollable_frame
         self.scan_boards()
         
+    def toggle_all_lights(self):
+        """Toggle all lights on or off on all boards"""
+        if not self.boards:
+            messagebox.showwarning("No Boards", "No boards available to control.")
+            return
+        
+        if self.master_on:
+            # Turn OFF all lights - save current values first
+            self.master_on = False
+            self.master_button_var.set("All Lights ON")
+            
+            # Save current values
+            self.saved_values = {}
+            for board_idx in range(len(self.boards)):
+                for channel_name in LED_CHANNELS:
+                    key = (board_idx, channel_name)
+                    if key in self.led_entries:
+                        try:
+                            self.saved_values[key] = self.led_entries[key].get()
+                            # Set entry to 0
+                            self.led_entries[key].delete(0, tk.END)
+                            self.led_entries[key].insert(0, "0")
+                        except (ValueError, KeyError):
+                            pass
+            
+            # Apply the zeros to all boards
+            self.apply_all_settings()
+            self.status_var.set("All lights turned OFF")
+            
+        else:
+            # Turn ON all lights - restore saved values
+            self.master_on = True
+            self.master_button_var.set("All Lights OFF")
+            
+            # Restore saved values
+            for key, value in self.saved_values.items():
+                if key in self.led_entries:
+                    board_idx, channel_name = key
+                    self.led_entries[key].delete(0, tk.END)
+                    self.led_entries[key].insert(0, value)
+            
+            # Apply the restored values
+            self.apply_all_settings()
+            self.status_var.set("All lights restored to previous settings")
+    
     def scan_boards(self):
         """Detect and initialize connections to XIAO RP2040 boards"""
         # Clear previous boards and GUI elements
@@ -170,6 +229,11 @@ class LEDControlGUI:
             frame.destroy()
         self.board_frames = []
         self.led_entries = {}
+        
+        # Reset master button state
+        self.master_on = True
+        self.master_button_var.set("All Lights OFF")
+        self.saved_values = {}
         
         # Detect connected boards
         try:
