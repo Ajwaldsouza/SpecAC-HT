@@ -260,6 +260,143 @@ class LEDControlGUI:
         self.scheduler_thread = threading.Thread(target=self.schedule_checker, daemon=True)
         self.scheduler_thread.start()
     
+    def is_time_between(self, current_time, start_time, end_time):
+        """Check if current time is between start and end times, handling overnight periods"""
+        # Convert all times to datetime for comparison
+        current = datetime.strptime(current_time, "%H:%M")
+        start = datetime.strptime(start_time, "%H:%M")
+        end = datetime.strptime(end_time, "%H:%M")
+        
+        if start <= end:
+            # Simple case: start time is before end time (e.g., 08:00 to 20:00)
+            return start <= current <= end
+        else:
+            # Wrap-around case: end time is before start time (e.g., 20:00 to 08:00 next day)
+            return current >= start or current <= end
+    
+    def apply_board_settings(self, board_idx):
+        """Apply settings for a specific board"""
+        if board_idx >= len(self.boards):
+            messagebox.showerror("Error", "Invalid board index")
+            return
+            
+        board = self.boards[board_idx]
+        duty_values = []
+        
+        # Check if scheduling is enabled for this board
+        scheduling_enabled = False
+        if board_idx in self.board_schedules:
+            scheduling_enabled = self.board_schedules[board_idx].get("enabled", False)
+        
+        if scheduling_enabled:
+            # Get the current time
+            current_time = datetime.now().strftime("%H:%M")
+            on_time = self.board_schedules[board_idx].get("on_time", "08:00")
+            off_time = self.board_schedules[board_idx].get("off_time", "20:00")
+            
+            # Check if current time is within the ON period
+            if not self.is_time_between(current_time, on_time, off_time):
+                # Outside of ON period - save the settings but turn off LEDs
+                saved_values = {}
+                
+                # Save the current UI values for later use
+                for channel in LED_CHANNELS:
+                    try:
+                        saved_values[channel] = self.led_entries[(board_idx, channel)].get()
+                    except (ValueError, KeyError):
+                        saved_values[channel] = "0"
+                
+                # Store saved values
+                self.board_schedules[board_idx]["saved_values"] = saved_values
+                
+                # Send all zeros to the board (lights off)
+                success, message = board.send_command([0, 0, 0, 0, 0, 0])
+                
+                if success:
+                    self.status_var.set(f"Board {board_idx+1}: Settings saved, lights off (outside scheduled hours)")
+                else:
+                    messagebox.showerror(f"Error - Board {board_idx+1}", message)
+                    self.status_var.set(f"Board {board_idx+1}: Error - {message}")
+                    
+                return
+        
+        # Get duty cycle values for each channel
+        for channel in LED_CHANNELS:
+            try:
+                percentage = int(self.led_entries[(board_idx, channel)].get())
+                duty = int((percentage / 100.0) * 4095)
+                duty_values.append(duty)
+            except ValueError:
+                duty_values.append(0)
+        
+        # If scheduling is enabled, save these values for future use
+        if scheduling_enabled:
+            saved_values = {}
+            for channel in LED_CHANNELS:
+                try:
+                    saved_values[channel] = self.led_entries[(board_idx, channel)].get()
+                except:
+                    saved_values[channel] = "0"
+            self.board_schedules[board_idx]["saved_values"] = saved_values
+        
+        # Send command to the board
+        success, message = board.send_command(duty_values)
+        
+        if success:
+            if scheduling_enabled:
+                self.status_var.set(f"Board {board_idx+1}: Settings applied (within scheduled hours)")
+            else:
+                self.status_var.set(f"Board {board_idx+1}: Settings applied successfully")
+        else:
+            messagebox.showerror(f"Error - Board {board_idx+1}", message)
+            self.status_var.set(f"Board {board_idx+1}: Error - {message}")
+    
+    def update_board_schedule(self, board_idx):
+        """Update the schedule for a specific board"""
+        if board_idx not in self.board_schedules:
+            self.board_schedules[board_idx] = {"enabled": False}
+            
+        # Get current values from widgets
+        self.board_schedules[board_idx]["enabled"] = self.board_schedule_vars[board_idx].get()
+        
+        if (board_idx, "on") in self.board_time_entries:
+            self.board_schedules[board_idx]["on_time"] = self.board_time_entries[(board_idx, "on")].get()
+            
+        if (board_idx, "off") in self.board_time_entries:
+            self.board_schedules[board_idx]["off_time"] = self.board_time_entries[(board_idx, "off")].get()
+            
+        # Store current LED values
+        saved_values = {}
+        for channel_name in LED_CHANNELS:
+            key = (board_idx, channel_name)
+            if key in self.led_entries:
+                try:
+                    saved_values[channel_name] = self.led_entries[key].get()
+                except:
+                    saved_values[channel_name] = "0"
+        
+        self.board_schedules[board_idx]["saved_values"] = saved_values
+        
+        # If scheduling was just enabled, check if we need to turn off lights
+        if self.board_schedules[board_idx]["enabled"]:
+            current_time = datetime.now().strftime("%H:%M")
+            on_time = self.board_schedules[board_idx].get("on_time", "08:00")
+            off_time = self.board_schedules[board_idx].get("off_time", "20:00")
+            
+            if not self.is_time_between(current_time, on_time, off_time):
+                # Outside of ON period - we should turn off the LEDs
+                self.status_var.set(f"Board {board_idx+1}: Schedule enabled, outside ON hours - lights off")
+                
+                # Set all entries to 0 in the UI
+                for channel_name in LED_CHANNELS:
+                    key = (board_idx, channel_name)
+                    if key in self.led_entries:
+                        self.led_entries[key].delete(0, tk.END)
+                        self.led_entries[key].insert(0, "0")
+                
+                # Apply the settings (which will send zeros to the board)
+                self.apply_board_settings(board_idx)
+    
     def schedule_checker(self):
         """Background thread to check and apply scheduled settings"""
         while True:
@@ -286,6 +423,7 @@ class LEDControlGUI:
                                 self.led_entries[key].delete(0, tk.END)
                                 self.led_entries[key].insert(0, value)
                         changes_made = True
+                        self.status_var.set(f"Board {board_idx+1}: Schedule activated - turning ON")
                     
                 elif off_time == current_time:
                     # Time to turn off all LEDs on this board
@@ -300,6 +438,7 @@ class LEDControlGUI:
                     
                     schedule_info["saved_values"] = saved_values
                     changes_made = True
+                    self.status_var.set(f"Board {board_idx+1}: Schedule activated - turning OFF")
             
             # Apply changes if any were made
             if changes_made:
@@ -443,59 +582,6 @@ class LEDControlGUI:
             return 0 <= val <= 100
         except ValueError:
             return False
-    
-    def update_board_schedule(self, board_idx):
-        """Update the schedule for a specific board"""
-        if board_idx not in self.board_schedules:
-            self.board_schedules[board_idx] = {"enabled": False}
-            
-        # Get current values from widgets
-        self.board_schedules[board_idx]["enabled"] = self.board_schedule_vars[board_idx].get()
-        
-        if (board_idx, "on") in self.board_time_entries:
-            self.board_schedules[board_idx]["on_time"] = self.board_time_entries[(board_idx, "on")].get()
-            
-        if (board_idx, "off") in self.board_time_entries:
-            self.board_schedules[board_idx]["off_time"] = self.board_time_entries[(board_idx, "off")].get()
-            
-        # Store current LED values
-        saved_values = {}
-        for channel_name in LED_CHANNELS:
-            key = (board_idx, channel_name)
-            if key in self.led_entries:
-                try:
-                    saved_values[channel_name] = self.led_entries[key].get()
-                except:
-                    saved_values[channel_name] = "0"
-        
-        self.board_schedules[board_idx]["saved_values"] = saved_values
-    
-    def apply_board_settings(self, board_idx):
-        """Apply settings for a specific board"""
-        if board_idx >= len(self.boards):
-            messagebox.showerror("Error", "Invalid board index")
-            return
-            
-        board = self.boards[board_idx]
-        duty_values = []
-        
-        # Get duty cycle values for each channel
-        for channel in LED_CHANNELS:
-            try:
-                percentage = int(self.led_entries[(board_idx, channel)].get())
-                duty = int((percentage / 100.0) * 4095)
-                duty_values.append(duty)
-            except ValueError:
-                duty_values.append(0)
-        
-        # Send command to the board
-        success, message = board.send_command(duty_values)
-        
-        if success:
-            self.status_var.set(f"Board {board_idx+1}: Settings applied successfully")
-        else:
-            messagebox.showerror(f"Error - Board {board_idx+1}", message)
-            self.status_var.set(f"Board {board_idx+1}: Error - {message}")
     
     def apply_all_settings(self):
         """Apply settings to all boards"""
