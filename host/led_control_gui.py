@@ -6,6 +6,7 @@ import threading
 import time
 import json
 from serial.tools import list_ports
+from datetime import datetime, timedelta
 
 # Constants
 MAX_BOARDS = 16
@@ -106,7 +107,15 @@ class LEDControlGUI:
         self.master_on = True
         self.saved_values = {}  # To store values when turning off
         
+        # Scheduling related variables
+        self.led_schedules = {}  # {(board_idx, channel): {"on_time": time, "off_time": time, "enabled": bool}}
+        self.time_entries = {}   # {(board_idx, channel, "on"/"off"): entry_widget}
+        self.schedule_vars = {}  # {(board_idx, channel): BooleanVar}
+        self.scheduler_running = False
+        self.scheduler_thread = None
+        
         self.create_gui()
+        self.start_scheduler()
         
     def create_gui(self):
         """Create the main GUI layout"""
@@ -130,6 +139,16 @@ class LEDControlGUI:
             width=15
         )
         master_button.pack(side=tk.LEFT, padx=20)
+        
+        # Add scheduler control button
+        self.scheduler_button_var = tk.StringVar(value="Start Scheduler")
+        scheduler_button = ttk.Button(
+            header_frame,
+            textvariable=self.scheduler_button_var,
+            command=self.toggle_scheduler,
+            width=15
+        )
+        scheduler_button.pack(side=tk.LEFT, padx=10)
         
         # Scan and Apply buttons
         btn_frame = ttk.Frame(header_frame)
@@ -221,6 +240,66 @@ class LEDControlGUI:
             self.apply_all_settings()
             self.status_var.set("All lights restored to previous settings")
     
+    def toggle_scheduler(self):
+        """Enable or disable the scheduler"""
+        if self.scheduler_running:
+            self.scheduler_running = False
+            self.scheduler_button_var.set("Start Scheduler")
+            self.status_var.set("Scheduler stopped")
+        else:
+            self.scheduler_running = True
+            self.scheduler_button_var.set("Stop Scheduler")
+            self.status_var.set("Scheduler started")
+            if not self.scheduler_thread or not self.scheduler_thread.is_alive():
+                self.start_scheduler()
+    
+    def start_scheduler(self):
+        """Start the scheduler thread"""
+        self.scheduler_running = True
+        self.scheduler_button_var.set("Stop Scheduler")
+        self.scheduler_thread = threading.Thread(target=self.schedule_checker, daemon=True)
+        self.scheduler_thread.start()
+    
+    def schedule_checker(self):
+        """Background thread to check and apply scheduled settings"""
+        while True:
+            if not self.scheduler_running:
+                time.sleep(1)
+                continue
+                
+            current_time = datetime.now().strftime("%H:%M")
+            changes_made = False
+            
+            for (board_idx, channel), schedule_info in self.led_schedules.items():
+                if not schedule_info.get("enabled", False):
+                    continue
+                    
+                on_time = schedule_info.get("on_time", "")
+                off_time = schedule_info.get("off_time", "")
+                
+                if on_time == current_time:
+                    # Time to turn on this LED
+                    if (board_idx, channel) in self.led_entries:
+                        if schedule_info.get("saved_value"):
+                            self.led_entries[(board_idx, channel)].delete(0, tk.END)
+                            self.led_entries[(board_idx, channel)].insert(0, schedule_info["saved_value"])
+                            changes_made = True
+                
+                elif off_time == current_time:
+                    # Time to turn off this LED
+                    if (board_idx, channel) in self.led_entries:
+                        # Save current value before turning off
+                        schedule_info["saved_value"] = self.led_entries[(board_idx, channel)].get()
+                        self.led_entries[(board_idx, channel)].delete(0, tk.END)
+                        self.led_entries[(board_idx, channel)].insert(0, "0")
+                        changes_made = True
+            
+            # Apply changes if any were made
+            if changes_made:
+                self.root.after(0, self.apply_all_settings)
+                
+            time.sleep(10)  # Check every 10 seconds
+    
     def scan_boards(self):
         """Detect and initialize connections to XIAO RP2040 boards"""
         # Clear previous boards and GUI elements
@@ -273,8 +352,15 @@ class LEDControlGUI:
             frame.grid(column=i, row=0, padx=10, pady=10)
             self.board_frames.append(frame)
             
+            # Add header row
+            ttk.Label(frame, text="LED Channel").grid(column=1, row=0, sticky=tk.W, padx=5)
+            ttk.Label(frame, text="Intensity (%)").grid(column=2, row=0, sticky=tk.W, padx=5)
+            ttk.Label(frame, text="ON Time").grid(column=4, row=0, sticky=tk.W, padx=5)
+            ttk.Label(frame, text="OFF Time").grid(column=5, row=0, sticky=tk.W, padx=5)
+            ttk.Label(frame, text="Schedule").grid(column=6, row=0, sticky=tk.W, padx=5)
+            
             # Add LED controls for each channel
-            for row, (channel_name, channel_idx) in enumerate(LED_CHANNELS.items()):
+            for row, (channel_name, channel_idx) in enumerate(LED_CHANNELS.items(), start=1):
                 color_frame = ttk.Frame(frame, width=20, height=20)
                 color_frame.grid(column=0, row=row, padx=5, pady=2)
                 color_label = tk.Label(color_frame, bg=LED_COLORS[channel_name], width=2)
@@ -297,12 +383,41 @@ class LEDControlGUI:
                 
                 self.led_entries[(i, channel_name)] = entry
                 
+                # Add time entry widgets
+                on_time_var = tk.StringVar(value="08:00")
+                on_time = ttk.Entry(frame, width=7, textvariable=on_time_var)
+                on_time.grid(column=4, row=row, padx=5)
+                self.time_entries[(i, channel_name, "on")] = on_time
+                
+                off_time_var = tk.StringVar(value="20:00")
+                off_time = ttk.Entry(frame, width=7, textvariable=off_time_var)
+                off_time.grid(column=5, row=row, padx=5)
+                self.time_entries[(i, channel_name, "off")] = off_time
+                
+                # Add schedule checkbox
+                schedule_var = tk.BooleanVar(value=False)
+                schedule_check = ttk.Checkbutton(
+                    frame, 
+                    variable=schedule_var,
+                    command=lambda b_idx=i, ch_name=channel_name: self.update_schedule(b_idx, ch_name)
+                )
+                schedule_check.grid(column=6, row=row)
+                self.schedule_vars[(i, channel_name)] = schedule_var
+                
+                # Initialize the schedule data
+                self.led_schedules[(i, channel_name)] = {
+                    "on_time": "08:00",
+                    "off_time": "20:00",
+                    "enabled": False,
+                    "saved_value": "0"
+                }
+                
             # Individual apply button
             ttk.Button(
                 frame, 
                 text="Apply", 
                 command=lambda b_idx=i: self.apply_board_settings(b_idx)
-            ).grid(column=1, row=len(LED_CHANNELS), columnspan=3, pady=10)
+            ).grid(column=1, row=len(LED_CHANNELS)+1, columnspan=6, pady=10)
     
     def validate_percentage(self, value):
         """Validate that entry is a valid percentage (0-100)"""
@@ -313,6 +428,29 @@ class LEDControlGUI:
             return 0 <= val <= 100
         except ValueError:
             return False
+    
+    def update_schedule(self, board_idx, channel_name):
+        """Update the schedule for a specific LED"""
+        key = (board_idx, channel_name)
+        
+        if key not in self.led_schedules:
+            self.led_schedules[key] = {"enabled": False}
+            
+        # Get current values from widgets
+        self.led_schedules[key]["enabled"] = self.schedule_vars[key].get()
+        
+        if (board_idx, channel_name, "on") in self.time_entries:
+            self.led_schedules[key]["on_time"] = self.time_entries[(board_idx, channel_name, "on")].get()
+            
+        if (board_idx, channel_name, "off") in self.time_entries:
+            self.led_schedules[key]["off_time"] = self.time_entries[(board_idx, channel_name, "off")].get()
+            
+        # Store current LED value as saved value
+        if key in self.led_entries:
+            try:
+                self.led_schedules[key]["saved_value"] = self.led_entries[key].get()
+            except:
+                self.led_schedules[key]["saved_value"] = "0"
     
     def apply_board_settings(self, board_idx):
         """Apply settings for a specific board"""
@@ -356,7 +494,7 @@ class LEDControlGUI:
         self.status_var.set(f"Applied settings to {success_count} board(s), {error_count} error(s)")
     
     def export_settings(self):
-        """Export current LED settings to a text file"""
+        """Export current LED settings and schedules to a text file"""
         if not self.boards:
             messagebox.showwarning("No Boards", "No boards available to export settings from.")
             return
@@ -365,13 +503,24 @@ class LEDControlGUI:
             # Collect all settings
             settings = {}
             for board_idx in range(len(self.boards)):
-                board_settings = {}
+                board_settings = {"intensity": {}, "schedule": {}}
+                
                 for channel_name in LED_CHANNELS:
+                    # Get intensity settings
                     try:
                         value = int(self.led_entries[(board_idx, channel_name)].get())
-                        board_settings[channel_name] = value
+                        board_settings["intensity"][channel_name] = value
                     except (ValueError, KeyError):
-                        board_settings[channel_name] = 0
+                        board_settings["intensity"][channel_name] = 0
+                    
+                    # Get schedule settings
+                    if (board_idx, channel_name) in self.led_schedules:
+                        board_settings["schedule"][channel_name] = {
+                            "on_time": self.led_schedules[(board_idx, channel_name)].get("on_time", "08:00"),
+                            "off_time": self.led_schedules[(board_idx, channel_name)].get("off_time", "20:00"),
+                            "enabled": self.led_schedules[(board_idx, channel_name)].get("enabled", False)
+                        }
+                
                 settings[f"board_{board_idx+1}"] = board_settings
             
             # Get file path from user
@@ -396,7 +545,7 @@ class LEDControlGUI:
             self.status_var.set(f"Export error: {str(e)}")
     
     def import_settings(self):
-        """Import LED settings from a text file and apply them"""
+        """Import LED settings and schedules from a text file and apply them"""
         try:
             # Get file path from user
             file_path = filedialog.askopenfilename(
@@ -429,12 +578,43 @@ class LEDControlGUI:
                     
                     if board_idx < 0 or board_idx >= len(self.boards):
                         continue  # Skip if board index is out of range
-                        
-                    for channel_name, value in board_settings.items():
-                        if channel_name in LED_CHANNELS and (board_idx, channel_name) in self.led_entries:
-                            self.led_entries[(board_idx, channel_name)].delete(0, tk.END)
-                            self.led_entries[(board_idx, channel_name)].insert(0, str(value))
-                            applied_count += 1
+                    
+                    # Apply intensity settings
+                    if "intensity" in board_settings:
+                        for channel_name, value in board_settings["intensity"].items():
+                            if channel_name in LED_CHANNELS and (board_idx, channel_name) in self.led_entries:
+                                self.led_entries[(board_idx, channel_name)].delete(0, tk.END)
+                                self.led_entries[(board_idx, channel_name)].insert(0, str(value))
+                                applied_count += 1
+                    
+                    # Apply schedule settings
+                    if "schedule" in board_settings:
+                        for channel_name, schedule in board_settings["schedule"].items():
+                            if channel_name in LED_CHANNELS:
+                                key = (board_idx, channel_name)
+                                
+                                # Update time entries
+                                if "on_time" in schedule and (board_idx, channel_name, "on") in self.time_entries:
+                                    self.time_entries[(board_idx, channel_name, "on")].delete(0, tk.END)
+                                    self.time_entries[(board_idx, channel_name, "on")].insert(0, schedule["on_time"])
+                                
+                                if "off_time" in schedule and (board_idx, channel_name, "off") in self.time_entries:
+                                    self.time_entries[(board_idx, channel_name, "off")].delete(0, tk.END)
+                                    self.time_entries[(board_idx, channel_name, "off")].insert(0, schedule["off_time"])
+                                
+                                # Update checkbox
+                                if "enabled" in schedule and key in self.schedule_vars:
+                                    self.schedule_vars[key].set(schedule["enabled"])
+                                
+                                # Update internal schedule data
+                                if key in self.led_schedules:
+                                    self.led_schedules[key].update({
+                                        "on_time": schedule.get("on_time", "08:00"),
+                                        "off_time": schedule.get("off_time", "20:00"),
+                                        "enabled": schedule.get("enabled", False)
+                                    })
+                                    
+                                applied_count += 1
                             
                 except (ValueError, IndexError, KeyError):
                     continue  # Skip invalid entries
