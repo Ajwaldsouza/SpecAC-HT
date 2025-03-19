@@ -411,24 +411,33 @@ class LEDControlGUI:
         main_frame.columnconfigure(0, weight=1)
         main_frame.rowconfigure(1, weight=1)
         
+        # Navigation frame for page buttons - MOVED TO TOP of boards_frame for better visibility
+        nav_frame = ttk.Frame(boards_frame)
+        nav_frame.pack(fill=tk.X, pady=5)
+        
+        # Page navigation buttons - Enhanced with more prominent styling
+        nav_label = ttk.Label(nav_frame, text="Board Navigation:", font=('Helvetica', 10, 'bold'))
+        nav_label.pack(side=tk.LEFT, padx=10)
+        
+        self.prev_button = ttk.Button(nav_frame, text="◀ Previous Page", command=self.prev_page, width=15)
+        self.prev_button.pack(side=tk.LEFT, padx=10)
+        
+        self.page_label = ttk.Label(nav_frame, text="Page 1", font=('Helvetica', 10, 'bold'))
+        self.page_label.pack(side=tk.LEFT, padx=10)
+        
+        self.next_button = ttk.Button(nav_frame, text="Next Page ▶", command=self.next_page, width=15)
+        self.next_button.pack(side=tk.LEFT, padx=10)
+        
         # Container frame for board frames
         self.boards_container = ttk.Frame(boards_frame)
         self.boards_container.pack(expand=True, fill=tk.BOTH, padx=10, pady=10)
         
-        # Navigation frame for page buttons
-        nav_frame = ttk.Frame(boards_frame)
-        nav_frame.pack(fill=tk.X, pady=5)
+        # Configure grid for boards_container - ensure columns and rows can expand
+        for i in range(4):  # 4 columns
+            self.boards_container.columnconfigure(i, weight=1, uniform="column")
+        for i in range(2):  # 2 rows
+            self.boards_container.rowconfigure(i, weight=1, uniform="row")
         
-        # Page navigation buttons
-        self.prev_button = ttk.Button(nav_frame, text="Previous Page", command=self.prev_page)
-        self.prev_button.pack(side=tk.LEFT, padx=10)
-        
-        self.page_label = ttk.Label(nav_frame, text="Page 1")
-        self.page_label.pack(side=tk.LEFT, padx=10)
-        
-        self.next_button = ttk.Button(nav_frame, text="Next Page", command=self.next_page)
-        self.next_button.pack(side=tk.LEFT, padx=10)
-
         # Fan control frame (new)
         fan_frame = ttk.LabelFrame(main_frame, text="Fan Controls")
         fan_frame.grid(column=0, row=2, columnspan=2, sticky=(tk.W, tk.E), pady=10)
@@ -530,7 +539,7 @@ class LEDControlGUI:
             # Calculate the row and column (2 rows x 4 columns grid)
             row = (i - start_idx) // 4
             col = (i - start_idx) % 4
-            self.board_frames[i].grid(row=row, column=col, padx=5, pady=5)
+            self.board_frames[i].grid(row=row, column=col, padx=5, pady=5, sticky=(tk.N, tk.W, tk.E, tk.S))
     
     def create_board_frames(self):
         """Create frames for each detected board"""
