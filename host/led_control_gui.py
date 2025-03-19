@@ -845,12 +845,15 @@ class LEDControlGUI:
 
     def schedule_checker(self):
         """Background thread to check and apply scheduled settings"""
+        # Track the last activation time for each board
+        last_activation = {}  # {board_idx: {"on": datetime, "off": datetime}}
+        
         while True:
             if not self.scheduler_running:
                 time.sleep(1)
                 continue
                 
-            current_time = datetime.now().strftime("%H:%M")
+            current_datetime = datetime.now()
             changes_made = False
             
             for board_idx, schedule_info in self.board_schedules.items():
@@ -860,31 +863,58 @@ class LEDControlGUI:
                 on_time = schedule_info.get("on_time", "")
                 off_time = schedule_info.get("off_time", "")
                 
-                if on_time == current_time:
-                    # Time to turn on all LEDs on this board
-                    if "saved_values" in schedule_info and schedule_info["saved_values"]:
-                        for channel_name, value in schedule_info["saved_values"].items():
+                # Initialize tracking for this board if needed
+                if board_idx not in last_activation:
+                    last_activation[board_idx] = {"on": None, "off": None}
+                
+                # Parse on_time and off_time
+                try:
+                    on_hour, on_minute = map(int, on_time.split(':'))
+                    off_hour, off_minute = map(int, off_time.split(':'))
+                    
+                    # Create datetime objects for today's scheduled times
+                    today = current_datetime.date()
+                    on_datetime = datetime(today.year, today.month, today.day, on_hour, on_minute)
+                    off_datetime = datetime(today.year, today.month, today.day, off_hour, off_minute)
+                    
+                    # Calculate time differences in minutes
+                    on_diff_minutes = abs((current_datetime - on_datetime).total_seconds()) / 60
+                    off_diff_minutes = abs((current_datetime - off_datetime).total_seconds()) / 60
+                    
+                    # Check if we're within the activation window for ON time (1 minute) and not recently activated
+                    if on_diff_minutes <= 1 and (last_activation[board_idx]["on"] is None or 
+                                              (current_datetime - last_activation[board_idx]["on"]).total_seconds() > 120):
+                        # Time to turn on all LEDs on this board
+                        if "saved_values" in schedule_info and schedule_info["saved_values"]:
+                            for channel_name, value in schedule_info["saved_values"].items():
+                                key = (board_idx, channel_name)
+                                if key in self.led_entries:
+                                    self.led_entries[key].delete(0, tk.END)
+                                    self.led_entries[key].insert(0, value)
+                            changes_made = True
+                            self.status_var.set(f"Board {board_idx+1}: Schedule activated - turning ON")
+                            last_activation[board_idx]["on"] = current_datetime
+                    
+                    # Check if we're within the activation window for OFF time (1 minute) and not recently activated
+                    if off_diff_minutes <= 1 and (last_activation[board_idx]["off"] is None or 
+                                               (current_datetime - last_activation[board_idx]["off"]).total_seconds() > 120):
+                        # Time to turn off all LEDs on this board
+                        # Save current values for all channels before turning off
+                        saved_values = {}
+                        for channel_name in LED_CHANNELS:
                             key = (board_idx, channel_name)
                             if key in self.led_entries:
+                                saved_values[channel_name] = self.led_entries[key].get()
                                 self.led_entries[key].delete(0, tk.END)
-                                self.led_entries[key].insert(0, value)
+                                self.led_entries[key].insert(0, "0")
+                        
+                        schedule_info["saved_values"] = saved_values
                         changes_made = True
-                        self.status_var.set(f"Board {board_idx+1}: Schedule activated - turning ON")
-                    
-                elif off_time == current_time:
-                    # Time to turn off all LEDs on this board
-                    # Save current values for all channels before turning off
-                    saved_values = {}
-                    for channel_name in LED_CHANNELS:
-                        key = (board_idx, channel_name)
-                        if key in self.led_entries:
-                            saved_values[channel_name] = self.led_entries[key].get()
-                            self.led_entries[key].delete(0, tk.END)
-                            self.led_entries[key].insert(0, "0")
-                    
-                    schedule_info["saved_values"] = saved_values
-                    changes_made = True
-                    self.status_var.set(f"Board {board_idx+1}: Schedule activated - turning OFF")
+                        self.status_var.set(f"Board {board_idx+1}: Schedule activated - turning OFF")
+                        last_activation[board_idx]["off"] = current_datetime
+                except (ValueError, TypeError):
+                    # Skip if time format is invalid
+                    continue
             
             # Apply changes if any were made
             if changes_made:

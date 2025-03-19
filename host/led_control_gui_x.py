@@ -5,8 +5,10 @@ import serial
 import threading
 import time
 import json
+import queue
 from serial.tools import list_ports
 from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor
 
 # Constants
 MAX_BOARDS = 16
@@ -40,216 +42,291 @@ class BoardConnection:
         self.fan_speed = 0
         self.fan_enabled = False
         self.max_retries = 3
+        self.lock = threading.RLock()
+        self.executor = ThreadPoolExecutor(max_workers=1)
+        self.pending_tasks = []
         
-    def connect(self):
-        """Establish serial connection to the board"""
-        try:
-            self.serial_conn = serial.Serial(
-                port=self.port,
-                baudrate=115200,
-                timeout=2,  # Increased timeout
-                write_timeout=2  # Added write timeout
-            )
-            # Give device time to reset after connection
-            time.sleep(2)
+    def connect(self, callback=None):
+        """Establish serial connection to the board asynchronously"""
+        future = self.executor.submit(self._connect_impl)
+        if callback:
+            future.add_done_callback(lambda f: callback(f.result()))
+        self.pending_tasks.append(future)
+        return future
             
-            # Clear any initialization messages
-            if self.serial_conn.in_waiting > 0:
-                self.serial_conn.reset_input_buffer()
+    def _connect_impl(self):
+        """Internal implementation of connect operation"""
+        with self.lock:
+            try:
+                self.serial_conn = serial.Serial(
+                    port=self.port,
+                    baudrate=115200,
+                    timeout=2,  # Increased timeout
+                    write_timeout=2  # Added write timeout
+                )
+                # Give device time to reset after connection
+                time.sleep(2)
                 
-            self.is_connected = True
-            return True
-        except serial.SerialException as e:
-            self.last_error = str(e)
-            self.is_connected = False
-            return False
+                # Clear any initialization messages
+                if self.serial_conn.in_waiting > 0:
+                    self.serial_conn.reset_input_buffer()
+                    
+                self.is_connected = True
+                return True
+            except serial.SerialException as e:
+                self.last_error = str(e)
+                self.is_connected = False
+                return False
             
-    def disconnect(self):
-        """Close serial connection"""
+    def disconnect(self, callback=None):
+        """Close serial connection asynchronously"""
+        future = self.executor.submit(self._disconnect_impl)
+        if callback:
+            future.add_done_callback(lambda f: callback(f.result()))
+        self.pending_tasks.append(future)
+        return future
+    
+    def _disconnect_impl(self):
+        """Internal implementation of disconnect operation"""
+        with self.lock:
+            if self.serial_conn and self.is_connected:
+                try:
+                    self.serial_conn.close()
+                except:
+                    pass
+                finally:
+                    self.is_connected = False
+            return True
+    
+    def send_command(self, duty_values, callback=None):
+        """Send command to update LED brightness asynchronously"""
+        future = self.executor.submit(self._send_command_impl, duty_values)
+        if callback:
+            future.add_done_callback(lambda f: callback(*f.result()))
+        self.pending_tasks.append(future)
+        return future
+    
+    def _send_command_impl(self, duty_values):
+        """Internal implementation of send_command operation"""
+        with self.lock:
+            if not self.is_connected:
+                if not self._connect_impl():
+                    return False, self.last_error
+            
+            retry_count = 0
+            while retry_count < self.max_retries:        
+                try:
+                    # Format: "SETALL d0 d1 d2 d3 d4 d5\n"
+                    command = "SETALL"
+                    for val in duty_values:
+                        command += f" {val}"
+                    command += "\n"
+                    
+                    # Clear any pending data
+                    if self.serial_conn.in_waiting > 0:
+                        self.serial_conn.reset_input_buffer()
+                    
+                    self.serial_conn.write(command.encode('utf-8'))
+                    
+                    # Wait for response with timeout
+                    start_time = time.time()
+                    while time.time() - start_time < 1.0:  # 1 second timeout
+                        if self.serial_conn.in_waiting > 0:
+                            response = self.serial_conn.readline().decode('utf-8').strip()
+                            if response == "OK":
+                                return True, "Success"
+                            elif response.startswith("ERR:"):
+                                return False, f"Error: {response}"
+                            else:
+                                return False, f"Unexpected response: {response}"
+                        time.sleep(0.1)
+                    
+                    retry_count += 1
+                    if retry_count < self.max_retries:
+                        time.sleep(0.5)  # Wait before retry
+                    else:
+                        return False, "Timeout waiting for response"
+                        
+                except Exception as e:
+                    self.is_connected = False
+                    return False, str(e)
+            
+            return False, "Max retries exceeded"
+    
+    def set_fan_speed(self, percentage, callback=None):
+        """Set the fan speed as a percentage asynchronously"""
+        future = self.executor.submit(self._set_fan_speed_impl, percentage)
+        if callback:
+            future.add_done_callback(lambda f: callback(*f.result()))
+        self.pending_tasks.append(future)
+        return future
+    
+    def _set_fan_speed_impl(self, percentage):
+        """Internal implementation of set_fan_speed operation"""
+        with self.lock:
+            if not self.is_connected:
+                if not self._connect_impl():
+                    return False, self.last_error
+                    
+            retry_count = 0
+            while retry_count < self.max_retries:
+                try:
+                    command = f"FAN_SET {percentage}\n"
+                    
+                    # Clear any pending data
+                    if self.serial_conn.in_waiting > 0:
+                        self.serial_conn.reset_input_buffer()
+                    
+                    self.serial_conn.write(command.encode('utf-8'))
+                    
+                    # Wait for response with timeout
+                    start_time = time.time()
+                    while time.time() - start_time < 1.0:  # 1 second timeout
+                        if self.serial_conn.in_waiting > 0:
+                            response = self.serial_conn.readline().decode('utf-8').strip()
+                            if response == "OK":
+                                self.fan_speed = percentage
+                                self.fan_enabled = percentage > 0
+                                return True, "Success"
+                            elif response.startswith("ERR:"):
+                                return False, f"Error: {response}"
+                            else:
+                                return False, f"Unexpected response: {response}"
+                        time.sleep(0.1)
+                    
+                    retry_count += 1
+                    if retry_count < self.max_retries:
+                        time.sleep(0.5)  # Wait before retry
+                    else:
+                        return False, "Timeout waiting for response"
+                        
+                except Exception as e:
+                    self.is_connected = False
+                    return False, str(e)
+            
+            return False, "Max retries exceeded"
+            
+    def turn_fan_on(self, callback=None):
+        """Turn the fan on asynchronously"""
+        future = self.executor.submit(self._turn_fan_on_impl)
+        if callback:
+            future.add_done_callback(lambda f: callback(*f.result()))
+        self.pending_tasks.append(future)
+        return future
+    
+    def _turn_fan_on_impl(self):
+        """Internal implementation of turn_fan_on operation"""
+        with self.lock:
+            if not self.is_connected:
+                if not self._connect_impl():
+                    return False, self.last_error
+            
+            retry_count = 0
+            while retry_count < self.max_retries:
+                try:
+                    command = "FAN_ON\n"
+                    
+                    # Clear any pending data
+                    if self.serial_conn.in_waiting > 0:
+                        self.serial_conn.reset_input_buffer()
+                    
+                    self.serial_conn.write(command.encode('utf-8'))
+                    
+                    # Wait for response with timeout
+                    start_time = time.time()
+                    while time.time() - start_time < 1.0:  # 1 second timeout
+                        if self.serial_conn.in_waiting > 0:
+                            response = self.serial_conn.readline().decode('utf-8').strip()
+                            if response == "OK":
+                                self.fan_enabled = True
+                                return True, "Success"
+                            elif response.startswith("ERR:"):
+                                return False, f"Error: {response}"
+                            else:
+                                return False, f"Unexpected response: {response}"
+                        time.sleep(0.1)
+                    
+                    retry_count += 1
+                    if retry_count < self.max_retries:
+                        time.sleep(0.5)  # Wait before retry
+                    else:
+                        return False, "Timeout waiting for response"
+                        
+                except Exception as e:
+                    self.is_connected = False
+                    return False, str(e)
+            
+            return False, "Max retries exceeded"
+            
+    def turn_fan_off(self, callback=None):
+        """Turn the fan off asynchronously"""
+        future = self.executor.submit(self._turn_fan_off_impl)
+        if callback:
+            future.add_done_callback(lambda f: callback(*f.result()))
+        self.pending_tasks.append(future)
+        return future
+    
+    def _turn_fan_off_impl(self):
+        """Internal implementation of turn_fan_off operation"""
+        with self.lock:
+            if not self.is_connected:
+                if not self._connect_impl():
+                    return False, self.last_error
+                    
+            retry_count = 0
+            while retry_count < self.max_retries:
+                try:
+                    command = "FAN_OFF\n"
+                    
+                    # Clear any pending data
+                    if self.serial_conn.in_waiting > 0:
+                        self.serial_conn.reset_input_buffer()
+                    
+                    self.serial_conn.write(command.encode('utf-8'))
+                    
+                    # Wait for response with timeout
+                    start_time = time.time()
+                    while time.time() - start_time < 1.0:  # 1 second timeout
+                        if self.serial_conn.in_waiting > 0:
+                            response = self.serial_conn.readline().decode('utf-8').strip()
+                            if response == "OK":
+                                self.fan_enabled = False
+                                self.fan_speed = 0
+                                return True, "Success"
+                            elif response.startswith("ERR:"):
+                                return False, f"Error: {response}"
+                            else:
+                                return False, f"Unexpected response: {response}"
+                        time.sleep(0.1)
+                    
+                    retry_count += 1
+                    if retry_count < self.max_retries:
+                        time.sleep(0.5)  # Wait before retry
+                    else:
+                        return False, "Timeout waiting for response"
+                        
+                except Exception as e:
+                    self.is_connected = False
+                    return False, str(e)
+            
+            return False, "Max retries exceeded"
+    
+    def cleanup(self):
+        """Clean up resources when shutting down"""
+        # Cancel any pending futures if possible
+        for task in self.pending_tasks:
+            if not task.done():
+                task.cancel()
+        
+        # Shutdown the executor
+        self.executor.shutdown(wait=False)
+        
+        # Ensure serial connection is closed
         if self.serial_conn and self.is_connected:
             try:
                 self.serial_conn.close()
             except:
                 pass
-            finally:
-                self.is_connected = False
-    
-    def send_command(self, duty_values):
-        """Send command to update LED brightness"""
-        if not self.is_connected:
-            if not self.connect():
-                return False, self.last_error
-        
-        retry_count = 0
-        while retry_count < self.max_retries:        
-            try:
-                # Format: "SETALL d0 d1 d2 d3 d4 d5\n"
-                command = "SETALL"
-                for val in duty_values:
-                    command += f" {val}"
-                command += "\n"
-                
-                # Clear any pending data
-                if self.serial_conn.in_waiting > 0:
-                    self.serial_conn.reset_input_buffer()
-                
-                self.serial_conn.write(command.encode('utf-8'))
-                
-                # Wait for response with timeout
-                start_time = time.time()
-                while time.time() - start_time < 1.0:  # 1 second timeout
-                    if self.serial_conn.in_waiting > 0:
-                        response = self.serial_conn.readline().decode('utf-8').strip()
-                        if response == "OK":
-                            return True, "Success"
-                        elif response.startswith("ERR:"):
-                            return False, f"Error: {response}"
-                        else:
-                            return False, f"Unexpected response: {response}"
-                    time.sleep(0.1)
-                
-                retry_count += 1
-                if retry_count < self.max_retries:
-                    time.sleep(0.5)  # Wait before retry
-                else:
-                    return False, "Timeout waiting for response"
-                    
-            except Exception as e:
-                self.is_connected = False
-                return False, str(e)
-        
-        return False, "Max retries exceeded"
-    
-    def set_fan_speed(self, percentage):
-        """Set the fan speed as a percentage"""
-        if not self.is_connected:
-            if not self.connect():
-                return False, self.last_error
-                
-        retry_count = 0
-        while retry_count < self.max_retries:
-            try:
-                command = f"FAN_SET {percentage}\n"
-                
-                # Clear any pending data
-                if self.serial_conn.in_waiting > 0:
-                    self.serial_conn.reset_input_buffer()
-                
-                self.serial_conn.write(command.encode('utf-8'))
-                
-                # Wait for response with timeout
-                start_time = time.time()
-                while time.time() - start_time < 1.0:  # 1 second timeout
-                    if self.serial_conn.in_waiting > 0:
-                        response = self.serial_conn.readline().decode('utf-8').strip()
-                        if response == "OK":
-                            self.fan_speed = percentage
-                            self.fan_enabled = percentage > 0
-                            return True, "Success"
-                        elif response.startswith("ERR:"):
-                            return False, f"Error: {response}"
-                        else:
-                            return False, f"Unexpected response: {response}"
-                    time.sleep(0.1)
-                
-                retry_count += 1
-                if retry_count < self.max_retries:
-                    time.sleep(0.5)  # Wait before retry
-                else:
-                    return False, "Timeout waiting for response"
-                    
-            except Exception as e:
-                self.is_connected = False
-                return False, str(e)
-        
-        return False, "Max retries exceeded"
-            
-    def turn_fan_on(self):
-        """Turn the fan on"""
-        if not self.is_connected:
-            if not self.connect():
-                return False, self.last_error
-        
-        retry_count = 0
-        while retry_count < self.max_retries:
-            try:
-                command = "FAN_ON\n"
-                
-                # Clear any pending data
-                if self.serial_conn.in_waiting > 0:
-                    self.serial_conn.reset_input_buffer()
-                
-                self.serial_conn.write(command.encode('utf-8'))
-                
-                # Wait for response with timeout
-                start_time = time.time()
-                while time.time() - start_time < 1.0:  # 1 second timeout
-                    if self.serial_conn.in_waiting > 0:
-                        response = self.serial_conn.readline().decode('utf-8').strip()
-                        if response == "OK":
-                            self.fan_enabled = True
-                            return True, "Success"
-                        elif response.startswith("ERR:"):
-                            return False, f"Error: {response}"
-                        else:
-                            return False, f"Unexpected response: {response}"
-                    time.sleep(0.1)
-                
-                retry_count += 1
-                if retry_count < self.max_retries:
-                    time.sleep(0.5)  # Wait before retry
-                else:
-                    return False, "Timeout waiting for response"
-                    
-            except Exception as e:
-                self.is_connected = False
-                return False, str(e)
-        
-        return False, "Max retries exceeded"
-            
-    def turn_fan_off(self):
-        """Turn the fan off"""
-        if not self.is_connected:
-            if not self.connect():
-                return False, self.last_error
-                
-        retry_count = 0
-        while retry_count < self.max_retries:
-            try:
-                command = "FAN_OFF\n"
-                
-                # Clear any pending data
-                if self.serial_conn.in_waiting > 0:
-                    self.serial_conn.reset_input_buffer()
-                
-                self.serial_conn.write(command.encode('utf-8'))
-                
-                # Wait for response with timeout
-                start_time = time.time()
-                while time.time() - start_time < 1.0:  # 1 second timeout
-                    if self.serial_conn.in_waiting > 0:
-                        response = self.serial_conn.readline().decode('utf-8').strip()
-                        if response == "OK":
-                            self.fan_enabled = False
-                            self.fan_speed = 0
-                            return True, "Success"
-                        elif response.startswith("ERR:"):
-                            return False, f"Error: {response}"
-                        else:
-                            return False, f"Unexpected response: {response}"
-                    time.sleep(0.1)
-                
-                retry_count += 1
-                if retry_count < self.max_retries:
-                    time.sleep(0.5)  # Wait before retry
-                else:
-                    return False, "Timeout waiting for response"
-                    
-            except Exception as e:
-                self.is_connected = False
-                return False, str(e)
-        
-        return False, "Max retries exceeded"
 
 
 class LEDControlGUI:
@@ -396,6 +473,23 @@ class LEDControlGUI:
         status_bar.grid(column=0, row=4, columnspan=2, sticky=(tk.W, tk.E))
         
         self.scan_boards()
+        
+        # Add window close handler for cleanup
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+    
+    def on_closing(self):
+        """Clean up resources and close the application"""
+        # Stop the scheduler
+        self.scheduler_running = False
+        if self.scheduler_thread and self.scheduler_thread.is_alive():
+            self.scheduler_thread.join(timeout=1.0)
+            
+        # Clean up board connections
+        for board in self.boards:
+            board.cleanup()
+            
+        # Destroy the main window
+        self.root.destroy()
     
     def next_page(self):
         """Navigate to the next page of boards"""
@@ -552,20 +646,35 @@ class LEDControlGUI:
             
             # Send zeros to all boards without changing UI
             success_count = 0
-            for board_idx in range(len(self.boards)):
-                if self.send_zeros_to_board(board_idx):
-                    success_count += 1
-                    
-            self.status_var.set(f"All lights turned OFF on {success_count}/{len(self.boards)} boards (settings preserved)")
+            active_boards = len(self.boards)
             
+            # Update status for processing
+            self.status_var.set("Turning all lights OFF...")
+            
+            # Track completion status
+            self.pending_operations = active_boards
+            
+            for board_idx, board in enumerate(self.boards):
+                board.send_command([0, 0, 0, 0, 0, 0], 
+                                  callback=lambda success, msg, idx=board_idx: 
+                                      self.on_toggle_lights_complete(success, idx))
         else:
             # Turn ON all lights - apply the values already in the UI
             self.master_on = True
             self.master_button_var.set("All Lights OFF")
             
+            # Update status
+            self.status_var.set("Restoring all light settings...")
+            
             # Apply the values that are already in the UI
             self.apply_all_settings()
-            self.status_var.set("All lights restored to displayed settings")
+    
+    def on_toggle_lights_complete(self, success, board_idx):
+        """Callback when a toggle lights operation completes"""
+        self.pending_operations -= 1
+        
+        if self.pending_operations == 0:
+            self.status_var.set("All lights turned OFF (settings preserved)")
     
     def toggle_scheduler(self):
         """Enable or disable the scheduler"""
@@ -636,14 +745,13 @@ class LEDControlGUI:
                 # Store saved values
                 self.board_schedules[board_idx]["saved_values"] = saved_values
                 
-                # Send all zeros to the board (lights off) without changing UI
-                success = self.send_zeros_to_board(board_idx)
+                # Update status to show we're processing
+                self.status_var.set(f"Board {board_idx+1}: Processing - turning lights off for schedule...")
                 
-                if success:
-                    self.status_var.set(f"Board {board_idx+1}: Settings saved, lights off (outside scheduled hours)")
-                else:
-                    self.status_var.set(f"Board {board_idx+1}: Error turning lights off for schedule")
-                    
+                # Send all zeros to the board (lights off) without changing UI
+                board.send_command([0, 0, 0, 0, 0, 0], 
+                                  callback=lambda success, msg: self.on_board_command_complete(
+                                      board_idx, success, msg, "outside scheduled hours"))
                 return
         
         # Get duty cycle values for each channel
@@ -665,16 +773,25 @@ class LEDControlGUI:
                     saved_values[channel] = "0"
             self.board_schedules[board_idx]["saved_values"] = saved_values
         
-        # Send command to the board
-        success, message = board.send_command(duty_values)
+        # Update status to show we're processing
+        self.status_var.set(f"Board {board_idx+1}: Applying settings...")
         
+        # Send command to the board
+        board.send_command(duty_values, 
+                          callback=lambda success, msg: self.on_board_command_complete(
+                              board_idx, success, msg, 
+                              "within scheduled hours" if scheduling_enabled else None))
+    
+    def on_board_command_complete(self, board_idx, success, message, extra_info=None):
+        """Callback when a board command completes"""
         if success:
-            if scheduling_enabled:
-                self.status_var.set(f"Board {board_idx+1}: Settings applied (within scheduled hours)")
+            if extra_info:
+                self.status_var.set(f"Board {board_idx+1}: Settings applied ({extra_info})")
             else:
                 self.status_var.set(f"Board {board_idx+1}: Settings applied successfully")
         else:
-            messagebox.showerror(f"Error - Board {board_idx+1}", message)
+            # Use after() to ensure messagebox runs in the main thread
+            self.root.after(0, lambda: messagebox.showerror(f"Error - Board {board_idx+1}", message))
             self.status_var.set(f"Board {board_idx+1}: Error - {message}")
     
     def update_board_schedule(self, board_idx):
@@ -722,10 +839,9 @@ class LEDControlGUI:
             return False
             
         board = self.boards[board_idx]
-        # Send command with all zeros directly
-        success, message = board.send_command([0, 0, 0, 0, 0, 0])
-        
-        return success
+        # Send command with all zeros directly (non-blocking now)
+        board.send_command([0, 0, 0, 0, 0, 0])
+        return True
 
     def schedule_checker(self):
         """Background thread to check and apply scheduled settings"""
@@ -836,14 +952,17 @@ class LEDControlGUI:
         success_count = 0
         error_count = 0
         
-        for i in range(len(self.boards)):
-            try:
-                self.apply_board_settings(i)
-                success_count += 1
-            except Exception as e:
-                error_count += 1
+        # Update status
+        self.status_var.set("Applying all settings...")
         
-        self.status_var.set(f"Applied settings to {success_count} board(s), {error_count} error(s)")
+        # Track completion status
+        active_boards = len(self.boards)
+        self.pending_operations = active_boards
+        
+        for i in range(active_boards):
+            self.apply_board_settings(i)
+            
+        # Result will be updated by individual board callbacks
     
     def toggle_all_fans(self):
         """Toggle all fans on or off on all boards"""
@@ -856,16 +975,17 @@ class LEDControlGUI:
             self.fans_on = False
             self.fan_button_var.set("Turn Fans ON")
             
-            success_count = 0
-            for i, board in enumerate(self.boards):
-                success, message = board.turn_fan_off()
-                if success:
-                    success_count += 1
-                else:
-                    messagebox.showerror(f"Error - Board {i+1}", message)
-                
-            self.status_var.set(f"All fans turned OFF on {success_count}/{len(self.boards)} boards")
+            # Update status
+            self.status_var.set("Turning all fans OFF...")
             
+            # Track completion status
+            active_boards = len(self.boards)
+            self.pending_fan_operations = active_boards
+            
+            for i, board in enumerate(self.boards):
+                board.turn_fan_off(callback=lambda success, msg, idx=i: 
+                                  self.on_toggle_fan_complete(success, msg, idx, False))
+                
         else:
             # Turn on all fans
             self.fans_on = True
@@ -877,16 +997,30 @@ class LEDControlGUI:
             except ValueError:
                 speed = 50  # Default to 50% if invalid
                 self.fan_speed_var.set("50")
-                
-            success_count = 0
+            
+            # Update status
+            self.status_var.set(f"Turning all fans ON at {speed}%...")
+            
+            # Track completion status
+            active_boards = len(self.boards)
+            self.pending_fan_operations = active_boards
+            
             for i, board in enumerate(self.boards):
-                success, message = board.set_fan_speed(speed)
-                if success:
-                    success_count += 1
-                else:
-                    messagebox.showerror(f"Error - Board {i+1}", message)
-                
-            self.status_var.set(f"All fans turned ON at {speed}% on {success_count}/{len(self.boards)} boards")
+                board.set_fan_speed(speed, callback=lambda success, msg, idx=i: 
+                                   self.on_toggle_fan_complete(success, msg, idx, True))
+    
+    def on_toggle_fan_complete(self, success, message, board_idx, is_on):
+        """Callback when a toggle fan operation completes"""
+        self.pending_fan_operations -= 1
+        
+        if not success:
+            # Use after() to ensure messagebox runs in the main thread
+            self.root.after(0, lambda: messagebox.showerror(f"Error - Board {board_idx+1}", message))
+        
+        if self.pending_fan_operations == 0:
+            action = "ON" if is_on else "OFF"
+            speed_info = f" at {self.fan_speed_var.get()}%" if is_on else ""
+            self.status_var.set(f"All fans turned {action}{speed_info}")
     
     def apply_fan_settings(self):
         """Apply the fan speed to all boards"""
@@ -900,22 +1034,35 @@ class LEDControlGUI:
             messagebox.showerror("Invalid Value", "Please enter a valid fan speed (0-100%).")
             return
             
-        success_count = 0
+        # Update status
+        self.status_var.set(f"Setting all fans to {speed}%...")
+        
+        # Track completion status
+        active_boards = len(self.boards)
+        self.pending_fan_operations = active_boards
+        
         for i, board in enumerate(self.boards):
-            success, message = board.set_fan_speed(speed)
-            if success:
-                success_count += 1
-                # Update the fans_on flag if needed
-                if speed > 0 and not self.fans_on:
-                    self.fans_on = True
-                    self.fan_button_var.set("Turn Fans OFF")
-                elif speed == 0 and self.fans_on:
-                    self.fans_on = False
-                    self.fan_button_var.set("Turn Fans ON")
-            else:
-                messagebox.showerror(f"Error - Board {i+1}", message)
-                
-        self.status_var.set(f"Fan speed set to {speed}% on {success_count}/{len(self.boards)} boards")
+            board.set_fan_speed(speed, callback=lambda success, msg, idx=i: 
+                               self.on_fan_setting_complete(success, msg, idx, speed))
+    
+    def on_fan_setting_complete(self, success, message, board_idx, speed):
+        """Callback when a fan setting operation completes"""
+        self.pending_fan_operations -= 1
+        
+        if success:
+            # Update the fans_on flag if needed
+            if speed > 0 and not self.fans_on:
+                self.fans_on = True
+                self.fan_button_var.set("Turn Fans OFF")
+            elif speed == 0 and self.fans_on:
+                self.fans_on = False
+                self.fan_button_var.set("Turn Fans ON")
+        else:
+            # Use after() to ensure messagebox runs in the main thread
+            self.root.after(0, lambda: messagebox.showerror(f"Error - Board {board_idx+1}", message))
+        
+        if self.pending_fan_operations == 0:
+            self.status_var.set(f"Fan speed set to {speed}% on all boards")
     
     def export_settings(self):
         """Export current LED settings and schedules to a text file"""
