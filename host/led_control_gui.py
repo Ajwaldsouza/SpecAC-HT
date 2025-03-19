@@ -582,12 +582,22 @@ class LEDControlGUI:
             # Create schedule controls
             ttk.Label(schedule_frame, text="ON Time:").grid(column=0, row=0, padx=5, pady=5, sticky=tk.W)
             on_time_var = tk.StringVar(value="08:00")
+            
+            # Add validation callback to variable
+            on_time_var.trace_add("write", lambda name, index, mode, b_idx=i, var=on_time_var: 
+                               self.validate_time_entry(b_idx, "on", var.get()))
+                               
             on_time = ttk.Entry(schedule_frame, width=7, textvariable=on_time_var)
             on_time.grid(column=1, row=0, padx=5, pady=5)
             self.board_time_entries[(i, "on")] = on_time
             
             ttk.Label(schedule_frame, text="OFF Time:").grid(column=2, row=0, padx=5, pady=5, sticky=tk.W)
             off_time_var = tk.StringVar(value="20:00")
+            
+            # Add validation callback to variable
+            off_time_var.trace_add("write", lambda name, index, mode, b_idx=i, var=off_time_var: 
+                                self.validate_time_entry(b_idx, "off", var.get()))
+                                
             off_time = ttk.Entry(schedule_frame, width=7, textvariable=off_time_var)
             off_time.grid(column=3, row=0, padx=5, pady=5)
             self.board_time_entries[(i, "off")] = off_time
@@ -699,17 +709,21 @@ class LEDControlGUI:
     
     def is_time_between(self, current_time, start_time, end_time):
         """Check if current time is between start and end times, handling overnight periods"""
-        # Convert all times to datetime for comparison
-        current = datetime.strptime(current_time, "%H:%M")
-        start = datetime.strptime(start_time, "%H:%M")
-        end = datetime.strptime(end_time, "%H:%M")
-        
-        if start <= end:
-            # Simple case: start time is before end time (e.g., 08:00 to 20:00)
-            return start <= current <= end
-        else:
-            # Wrap-around case: end time is before start time (e.g., 20:00 to 08:00 next day)
-            return current >= start or current <= end
+        try:
+            # Convert all times to datetime for comparison
+            current = datetime.strptime(current_time, "%H:%M")
+            start = datetime.strptime(start_time, "%H:%M")
+            end = datetime.strptime(end_time, "%H:%M")
+            
+            if start <= end:
+                # Simple case: start time is before end time (e.g., 08:00 to 20:00)
+                return start <= current <= end
+            else:
+                # Wrap-around case: end time is before start time (e.g., 20:00 to 08:00 next day)
+                return current >= start or current <= end
+        except ValueError:
+            # If any time format is invalid, default to True (safer)
+            return True
     
     def apply_board_settings(self, board_idx):
         """Apply settings for a specific board"""
@@ -784,13 +798,31 @@ class LEDControlGUI:
         was_enabled = self.board_schedules[board_idx].get("enabled", False)
         is_enabled = self.board_schedule_vars[board_idx].get()
         
-        self.board_schedules[board_idx]["enabled"] = is_enabled
+        # Validate time entries before applying
+        on_time_valid = False
+        off_time_valid = False
         
         if (board_idx, "on") in self.board_time_entries:
-            self.board_schedules[board_idx]["on_time"] = self.board_time_entries[(board_idx, "on")].get()
-            
+            on_time = self.board_time_entries[(board_idx, "on")].get()
+            on_time_valid = self.validate_time_format(on_time)
+            if on_time_valid:
+                self.board_schedules[board_idx]["on_time"] = on_time
+        
         if (board_idx, "off") in self.board_time_entries:
-            self.board_schedules[board_idx]["off_time"] = self.board_time_entries[(board_idx, "off")].get()
+            off_time = self.board_time_entries[(board_idx, "off")].get()
+            off_time_valid = self.validate_time_format(off_time)
+            if off_time_valid:
+                self.board_schedules[board_idx]["off_time"] = off_time
+        
+        # If times are invalid, don't enable scheduling
+        if is_enabled and (not on_time_valid or not off_time_valid):
+            messagebox.showerror("Invalid Time Format", 
+                "Scheduling cannot be enabled with invalid time format. Please use HH:MM (24-hour) format.")
+            # Reset the checkbox
+            self.board_schedule_vars[board_idx].set(False)
+            is_enabled = False
+        
+        self.board_schedules[board_idx]["enabled"] = is_enabled
         
         # Always save current UI values
         self.save_board_ui_values(board_idx)
@@ -1237,10 +1269,16 @@ class LEDControlGUI:
         if not schedule_info.get("enabled", False):
             return True  # Not using scheduling, so always active
         
-        # Check if current time is within ON period
+        # Get time values
         current_time = datetime.now().strftime("%H:%M")
         on_time = schedule_info.get("on_time", "08:00")
         off_time = schedule_info.get("off_time", "20:00")
+        
+        # Validate time formats
+        if not self.validate_time_format(on_time) or not self.validate_time_format(off_time):
+            # If time format is invalid, default to active (safer)
+            self.status_var.set(f"Board {board_idx+1}: WARNING - Invalid schedule time format. Using default ON state.")
+            return True
         
         is_active = self.is_time_between(current_time, on_time, off_time)
         
@@ -1265,7 +1303,36 @@ class LEDControlGUI:
         
         self.board_schedules[board_idx]["saved_values"] = saved_values
         return saved_values
-        
+    
+    # Add time validation method
+    def validate_time_format(self, time_str):
+        """Validate that the time string is in HH:MM format (24-hour)"""
+        if time_str == "":
+            return True  # Empty is okay during typing
+            
+        # Check format with regex
+        import re
+        if not re.match(r'^([0-1][0-9]|2[0-3]):([0-5][0-9])$', time_str):
+            return False
+            
+        # Format is correct
+        return True
+    
+    # Add method to validate and provide feedback for time entries
+    def validate_time_entry(self, board_idx, entry_type, new_value):
+        """Validate time entry and provide feedback"""
+        if self.validate_time_format(new_value):
+            # Valid format - reset any previous error styling
+            key = (board_idx, entry_type)
+            if key in self.board_time_entries:
+                self.board_time_entries[key].config(foreground="black")
+            return True
+        else:
+            # Invalid format - set error styling
+            key = (board_idx, entry_type)
+            if key in self.board_time_entries:
+                self.board_time_entries[key].config(foreground="red")
+            return False
 
 if __name__ == "__main__":
     root = tk.Tk()
