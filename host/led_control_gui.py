@@ -412,8 +412,14 @@ class LEDControlGUI:
     
     def update_page_display(self):
         """Update the display to show the current page of boards"""
+        # Calculate max pages based on board frames, not boards
+        max_pages = max(1, (len(self.board_frames) + self.boards_per_page - 1) // self.boards_per_page)
+        
+        # Ensure current page is within bounds
+        if self.current_page >= max_pages:
+            self.current_page = max(0, max_pages - 1)
+        
         # Update page label
-        max_pages = max(1, (len(self.boards) + self.boards_per_page - 1) // self.boards_per_page)
         self.page_label.config(text=f"Page {self.current_page + 1} of {max_pages}")
         
         # Enable/disable navigation buttons as needed
