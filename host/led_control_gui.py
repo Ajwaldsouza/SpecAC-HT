@@ -6,6 +6,8 @@ import threading
 import time
 import json
 import queue
+import os
+import re
 from serial.tools import list_ports
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
@@ -29,13 +31,18 @@ LED_COLORS = {
     'BLUE': "#0000FF"
 }
 
+# Path to the microcontroller serial mapping file
+SERIAL_MAPPING_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
+                                  "microcontroller", "microcontroller_serial.txt")
+
 
 class BoardConnection:
     """Manages the connection to a single XIAO RP2040 board"""
     
-    def __init__(self, port, serial_number):
+    def __init__(self, port, serial_number, chamber_number=None):
         self.port = port
         self.serial_number = serial_number
+        self.chamber_number = chamber_number  # Add chamber number property
         self.serial_conn = None
         self.is_connected = False
         self.last_error = ""
@@ -358,12 +365,44 @@ class LEDControlGUI:
         self.scheduler_running = False
         self.scheduler_thread = None
         
+        # Chamber mapping variables
+        self.chamber_mapping = {}  # {serial_number: chamber_number}
+        self.load_chamber_mapping()
+        
         # Pagination variables
         self.current_page = 0
         self.boards_per_page = 8
         
         self.create_gui()
         self.start_scheduler()
+    
+    def load_chamber_mapping(self):
+        """Load the chamber to serial number mapping from the text file"""
+        self.chamber_mapping = {}
+        
+        try:
+            if os.path.exists(SERIAL_MAPPING_FILE):
+                with open(SERIAL_MAPPING_FILE, 'r') as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                            
+                        # Parse the chamber:serial format
+                        match = re.match(r'^(\d+):(.+)$', line)
+                        if match:
+                            chamber_num = int(match.group(1))
+                            serial_num = match.group(2).strip()
+                            
+                            # Store the mapping both ways for easy lookup
+                            self.chamber_mapping[serial_num] = chamber_num
+                        
+                self.status_var.set(f"Loaded chamber mapping for {len(self.chamber_mapping)} chambers")
+            else:
+                self.status_var.set(f"Chamber mapping file not found at {SERIAL_MAPPING_FILE}")
+        except Exception as e:
+            self.status_var.set(f"Error loading chamber mapping: {str(e)}")
+            print(f"Error loading chamber mapping: {str(e)}")
         
     def create_gui(self):
         """Create the main GUI layout"""
@@ -416,16 +455,16 @@ class LEDControlGUI:
         nav_frame.pack(fill=tk.X, pady=5)
         
         # Page navigation buttons - Enhanced with more prominent styling
-        nav_label = ttk.Label(nav_frame, text="Board Navigation:", font=('Helvetica', 10, 'bold'))
+        nav_label = ttk.Label(nav_frame, text="Chamber Navigation:", font=('Helvetica', 10, 'bold'))
         nav_label.pack(side=tk.LEFT, padx=10)
         
-        self.prev_button = ttk.Button(nav_frame, text="◀ Previous Page", command=self.prev_page, width=15)
+        self.prev_button = ttk.Button(nav_frame, text="◀ Chambers 1-8", command=self.prev_page, width=15)
         self.prev_button.pack(side=tk.LEFT, padx=10)
         
-        self.page_label = ttk.Label(nav_frame, text="Page 1", font=('Helvetica', 10, 'bold'))
+        self.page_label = ttk.Label(nav_frame, text="Chambers 1-8", font=('Helvetica', 10, 'bold'))
         self.page_label.pack(side=tk.LEFT, padx=10)
         
-        self.next_button = ttk.Button(nav_frame, text="Next Page ▶", command=self.next_page, width=15)
+        self.next_button = ttk.Button(nav_frame, text="Chambers 9-16 ▶", command=self.next_page, width=15)
         self.next_button.pack(side=tk.LEFT, padx=10)
         
         # Container frame for board frames
@@ -501,55 +540,68 @@ class LEDControlGUI:
         self.root.destroy()
     
     def next_page(self):
-        """Navigate to the next page of boards"""
-        max_pages = (len(self.boards) + self.boards_per_page - 1) // self.boards_per_page
-        if self.current_page < max_pages - 1:
-            self.current_page += 1
+        """Navigate to chambers 9-16 (page 2)"""
+        if self.current_page == 0:
+            self.current_page = 1
             self.update_page_display()
     
     def prev_page(self):
-        """Navigate to the previous page of boards"""
-        if self.current_page > 0:
-            self.current_page -= 1
+        """Navigate to chambers 1-8 (page 1)"""
+        if self.current_page == 1:
+            self.current_page = 0
             self.update_page_display()
     
     def update_page_display(self):
-        """Update the display to show the current page of boards"""
-        # Calculate max pages based on board frames, not boards
-        max_pages = max(1, (len(self.board_frames) + self.boards_per_page - 1) // self.boards_per_page)
-        
-        # Ensure current page is within bounds
-        if self.current_page >= max_pages:
-            self.current_page = max(0, max_pages - 1)
-        
-        # Update page label
-        self.page_label.config(text=f"Page {self.current_page + 1} of {max_pages}")
-        
-        # Enable/disable navigation buttons as needed
-        self.prev_button.config(state=tk.NORMAL if self.current_page > 0 else tk.DISABLED)
-        self.next_button.config(state=tk.NORMAL if self.current_page < max_pages - 1 else tk.DISABLED)
-        
+        """Update the display to show chambers 1-8 or 9-16 based on current page"""
         # Hide all board frames first
         for frame in self.board_frames:
             frame.grid_remove()
         
-        # Show only the boards for the current page
-        start_idx = self.current_page * self.boards_per_page
-        for i in range(start_idx, min(start_idx + self.boards_per_page, len(self.board_frames))):
-            # Calculate the row and column (2 rows x 4 columns grid)
-            row = (i - start_idx) // 4
-            col = (i - start_idx) % 4
-            self.board_frames[i].grid(row=row, column=col, padx=5, pady=5, sticky=(tk.N, tk.W, tk.E, tk.S))
+        # Update page label and navigation buttons
+        if self.current_page == 0:
+            self.page_label.config(text="Chambers 1-8")
+            self.prev_button.config(state=tk.DISABLED)
+            self.next_button.config(state=tk.NORMAL if len(self.boards) > 8 else tk.DISABLED)
+            first_chamber = 1
+            last_chamber = 8
+        else:  # page 1
+            self.page_label.config(text="Chambers 9-16")
+            self.prev_button.config(state=tk.NORMAL)
+            self.next_button.config(state=tk.DISABLED)
+            first_chamber = 9
+            last_chamber = 16
+        
+        # Display boards based on chamber number
+        displayed_count = 0
+        for i, board in enumerate(self.boards):
+            chamber_number = board.chamber_number
+            
+            if first_chamber <= chamber_number <= last_chamber:
+                # Calculate position within the page (2 rows x 4 columns)
+                relative_position = chamber_number - first_chamber
+                row = relative_position // 4
+                col = relative_position % 4
+                
+                if i < len(self.board_frames):
+                    self.board_frames[i].grid(row=row, column=col, padx=5, pady=5, sticky=(tk.N, tk.W, tk.E, tk.S))
+                    displayed_count += 1
+        
+        # Update status message to show how many chambers are displayed
+        self.status_var.set(f"Displaying {displayed_count} chambers (Chambers {first_chamber}-{last_chamber})")
     
     def create_board_frames(self):
-        """Create frames for each detected board"""
+        """Create frames for each detected board, sorted by chamber number"""
         # Remove old frames
         for frame in self.board_frames:
             frame.destroy()
         self.board_frames = []
         
+        # Sort boards by chamber number
+        self.boards.sort(key=lambda b: b.chamber_number)
+        
         for i, board in enumerate(self.boards):
-            frame = ttk.LabelFrame(self.boards_container, text=f"Board {i+1}: {board.serial_number}")
+            chamber_number = board.chamber_number
+            frame = ttk.LabelFrame(self.boards_container, text=f"Chamber {chamber_number} (S/N: {board.serial_number})")
             self.board_frames.append(frame)
             
             # LED control section
@@ -638,7 +690,7 @@ class LEDControlGUI:
                 command=lambda b_idx=i: self.apply_board_settings(b_idx)
             ).grid(column=0, row=2, pady=10, sticky=(tk.W, tk.E))
         
-        # Update the display to show the first page
+        # Update the display to show chambers 1-8 by default
         self.current_page = 0
         self.update_page_display()
     
@@ -788,15 +840,20 @@ class LEDControlGUI:
     
     def on_board_command_complete(self, board_idx, success, message, extra_info=None):
         """Callback when a board command completes"""
+        if board_idx >= len(self.boards):
+            return
+            
+        chamber_number = self.boards[board_idx].chamber_number
+        
         if success:
             if extra_info:
-                self.status_var.set(f"Board {board_idx+1}: Settings applied ({extra_info})")
+                self.status_var.set(f"Chamber {chamber_number}: Settings applied ({extra_info})")
             else:
-                self.status_var.set(f"Board {board_idx+1}: Settings applied successfully")
+                self.status_var.set(f"Chamber {chamber_number}: Settings applied successfully")
         else:
             # Use after() to ensure messagebox runs in the main thread
-            self.root.after(0, lambda: messagebox.showerror(f"Error - Board {board_idx+1}", message))
-            self.status_var.set(f"Board {board_idx+1}: Error - {message}")
+            self.root.after(0, lambda: messagebox.showerror(f"Error - Chamber {chamber_number}", message))
+            self.status_var.set(f"Chamber {chamber_number}: Error - {message}")
     
     def update_board_schedule(self, board_idx):
         """Update the schedule for a specific board"""
@@ -949,6 +1006,9 @@ class LEDControlGUI:
         self.master_button_var.set("All Lights OFF")
         self.saved_values = {}
         
+        # Make sure chamber mapping is loaded
+        self.load_chamber_mapping()
+        
         # Detect connected boards
         try:
             detected_boards = self.detect_xiao_boards()
@@ -959,22 +1019,39 @@ class LEDControlGUI:
                 return
                 
             # Create board connections
-            for port, serial_number in detected_boards:
-                self.boards.append(BoardConnection(port, serial_number))
+            for port, serial_number, chamber_number in detected_boards:
+                self.boards.append(BoardConnection(port, serial_number, chamber_number))
             
             # Create GUI elements for boards
             self.create_board_frames()
             
-            self.status_var.set(f"Found {len(self.boards)} board(s)")
+            # Count boards by chamber ranges
+            chambers_1_8 = sum(1 for board in self.boards if 1 <= board.chamber_number <= 8)
+            chambers_9_16 = sum(1 for board in self.boards if 9 <= board.chamber_number <= 16)
+            
+            self.status_var.set(f"Found {len(self.boards)} board(s): {chambers_1_8} in chambers 1-8, {chambers_9_16} in chambers 9-16")
         except Exception as e:
             messagebox.showerror("Error Scanning Boards", str(e))
             self.status_var.set(f"Error: {str(e)}")
     
     def detect_xiao_boards(self):
-        """Detect connected XIAO RP2040 boards"""
+        """Detect connected XIAO RP2040 boards and assign chamber numbers"""
         results = []
+        
+        # Detect all XIAO RP2040 boards by VID:PID
         for port_info in list_ports.grep('VID:PID=2E8A:0005'):
-            results.append([port_info.device, port_info.serial_number])
+            serial_number = port_info.serial_number
+            
+            # Assign chamber number
+            chamber_number = self.chamber_mapping.get(serial_number)
+            
+            # If no chamber number found, assign a high number (ensuring it comes after known chambers)
+            if chamber_number is None:
+                chamber_number = 100  # High number to appear at end when sorted
+                self.status_var.set(f"Warning: Board with S/N {serial_number} not found in chamber mapping")
+            
+            results.append([port_info.device, serial_number, chamber_number])
+        
         return results
     
     def validate_percentage(self, value):
@@ -1113,7 +1190,8 @@ class LEDControlGUI:
         try:
             # Collect all settings
             settings = {}
-            for board_idx in range(len(self.boards)):
+            for board_idx, board in enumerate(self.boards):
+                chamber_number = board.chamber_number
                 board_settings = {"intensity": {}, "schedule": {}, "fan": {}}
                 
                 # Get intensity settings
@@ -1134,11 +1212,12 @@ class LEDControlGUI:
                 
                 # Add fan settings
                 board_settings["fan"] = {
-                    "enabled": self.boards[board_idx].fan_enabled,
-                    "speed": self.boards[board_idx].fan_speed
+                    "enabled": board.fan_enabled,
+                    "speed": board.fan_speed
                 }
                 
-                settings[f"board_{board_idx+1}"] = board_settings
+                # Use chamber number as the key instead of board index
+                settings[f"chamber_{chamber_number}"] = board_settings
             
             # Get file path from user
             file_path = filedialog.asksaveasfilename(
@@ -1192,11 +1271,14 @@ class LEDControlGUI:
             
             for board_key, board_settings in settings.items():
                 try:
-                    # Extract board index (format: "board_X")
-                    board_idx = int(board_key.split("_")[1]) - 1
+                    # Extract chamber number (format: "chamber_X")
+                    chamber_number = int(board_key.split("_")[1])
                     
-                    if board_idx < 0 or board_idx >= len(self.boards):
-                        continue  # Skip if board index is out of range
+                    # Find the board index for this chamber number
+                    board_idx = next((i for i, b in enumerate(self.boards) if b.chamber_number == chamber_number), None)
+                    
+                    if board_idx is None:
+                        continue  # Skip if chamber number is not found
                     
                     # Apply intensity settings
                     if "intensity" in board_settings:
