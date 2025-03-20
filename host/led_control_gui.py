@@ -6,6 +6,8 @@ import threading
 import time
 import json
 import queue
+import os
+import re
 from serial.tools import list_ports
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
@@ -33,9 +35,10 @@ LED_COLORS = {
 class BoardConnection:
     """Manages the connection to a single XIAO RP2040 board"""
     
-    def __init__(self, port, serial_number):
+    def __init__(self, port, serial_number, board_id=None):
         self.port = port
         self.serial_number = serial_number
+        self.board_id = board_id  # Add board_id to track the assigned number
         self.serial_conn = None
         self.is_connected = False
         self.last_error = ""
@@ -362,9 +365,46 @@ class LEDControlGUI:
         self.current_page = 0
         self.boards_per_page = 8
         
+        # Serial number to board ID mapping
+        self.serial_to_id_map = {}
+        self.load_serial_mapping()
+        
         self.create_gui()
         self.start_scheduler()
-        
+    
+    def load_serial_mapping(self):
+        """Load the mapping of serial numbers to board IDs from text file"""
+        try:
+            # Get the directory of the script file
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            # Go up one directory to reach the project root
+            project_root = os.path.dirname(script_dir)
+            # Path to the microcontroller_serial.txt file
+            file_path = os.path.join(project_root, "microcontroller", "microcontroller_serial.txt")
+            
+            # If file doesn't exist at expected path, try relative path from current directory
+            if not os.path.exists(file_path):
+                file_path = os.path.join("microcontroller", "microcontroller_serial.txt")
+            
+            if os.path.exists(file_path):
+                with open(file_path, 'r') as f:
+                    lines = f.readlines()
+                
+                # Parse each line to get board ID and serial number
+                for line in lines:
+                    match = re.match(r'(\d+):\s*([0-9a-fA-F]+)', line.strip())
+                    if match:
+                        board_id = int(match.group(1))
+                        serial_number = match.group(2)
+                        self.serial_to_id_map[serial_number] = board_id
+                
+                print(f"Loaded {len(self.serial_to_id_map)} board mappings from {file_path}")
+            else:
+                print(f"Warning: Serial mapping file not found at {file_path}")
+                # Continue without mapping - boards will be ordered as detected
+        except Exception as e:
+            print(f"Error loading serial mapping: {str(e)}")
+    
     def create_gui(self):
         """Create the main GUI layout"""
         main_frame = ttk.Frame(self.root, padding="10")
@@ -548,95 +588,130 @@ class LEDControlGUI:
             frame.destroy()
         self.board_frames = []
         
-        for i, board in enumerate(self.boards):
-            frame = ttk.LabelFrame(self.boards_container, text=f"Board {i+1}: {board.serial_number}")
-            self.board_frames.append(frame)
+        # Create an array of MAX_BOARDS size filled with None to represent all possible board positions
+        board_positions = [None] * MAX_BOARDS
+        
+        # Place each board in its correct position
+        for board in self.boards:
+            if board.board_id is not None and 1 <= board.board_id <= MAX_BOARDS:
+                position = board.board_id - 1  # Convert 1-based ID to 0-based index
+                board_positions[position] = board
+        
+        # Create frames for all possible positions, either with a real board or an empty placeholder
+        for position in range(MAX_BOARDS):
+            board_id = position + 1  # Convert 0-based position to 1-based ID
+            board = board_positions[position]
             
-            # LED control section
-            led_control_frame = ttk.LabelFrame(frame, text="LED Controls")
-            led_control_frame.grid(column=0, row=0, padx=5, pady=5, sticky=(tk.W, tk.E))
-            
-            # Add header row for LED controls
-            ttk.Label(led_control_frame, text="LED Channel").grid(column=1, row=0, sticky=tk.W, padx=5)
-            ttk.Label(led_control_frame, text="Intensity (%)").grid(column=2, row=0, sticky=tk.W, padx=5)
-            
-            # Add LED controls for each channel
-            for row, (channel_name, channel_idx) in enumerate(LED_CHANNELS.items(), start=1):
-                color_frame = ttk.Frame(led_control_frame, width=20, height=20)
-                color_frame.grid(column=0, row=row, padx=5, pady=2)
-                color_label = tk.Label(color_frame, bg=LED_COLORS[channel_name], width=2)
-                color_label.pack(fill=tk.BOTH, expand=True)
+            if board is None:
+                # Create a placeholder frame for this position
+                frame = ttk.LabelFrame(self.boards_container, text=f"Board {board_id}: Not Connected")
+                frame.configure(style="Placeholder.TLabelframe")
+                self.board_frames.append(frame)
                 
-                ttk.Label(led_control_frame, text=channel_name).grid(column=1, row=row, sticky=tk.W, padx=5)
+                # Add a centered label to indicate board is not connected
+                placeholder_frame = ttk.Frame(frame)
+                placeholder_frame.pack(expand=True, fill=tk.BOTH, padx=20, pady=40)
                 
-                value_var = tk.StringVar(value="0")
-                entry = ttk.Spinbox(
-                    led_control_frame, 
-                    from_=0, 
-                    to=100, 
-                    width=5, 
-                    textvariable=value_var,
-                    validate='key',
-                    validatecommand=(self.root.register(self.validate_percentage), '%P')
+                placeholder_label = ttk.Label(placeholder_frame, 
+                                             text="Board not connected",
+                                             font=('Helvetica', 12))
+                placeholder_label.pack(expand=True, pady=20)
+                
+            else:
+                # Create frame for connected board
+                frame = ttk.LabelFrame(self.boards_container, text=f"Board {board_id}: {board.serial_number}")
+                self.board_frames.append(frame)
+                
+                # LED control section
+                led_control_frame = ttk.LabelFrame(frame, text="LED Controls")
+                led_control_frame.grid(column=0, row=0, padx=5, pady=5, sticky=(tk.W, tk.E))
+                
+                # Add header row for LED controls
+                ttk.Label(led_control_frame, text="LED Channel").grid(column=1, row=0, sticky=tk.W, padx=5)
+                ttk.Label(led_control_frame, text="Intensity (%)").grid(column=2, row=0, sticky=tk.W, padx=5)
+                
+                # Add LED controls for each channel
+                for row, (channel_name, channel_idx) in enumerate(LED_CHANNELS.items(), start=1):
+                    color_frame = ttk.Frame(led_control_frame, width=20, height=20)
+                    color_frame.grid(column=0, row=row, padx=5, pady=2)
+                    color_label = tk.Label(color_frame, bg=LED_COLORS[channel_name], width=2)
+                    color_label.pack(fill=tk.BOTH, expand=True)
+                    
+                    ttk.Label(led_control_frame, text=channel_name).grid(column=1, row=row, sticky=tk.W, padx=5)
+                    
+                    value_var = tk.StringVar(value="0")
+                    entry = ttk.Spinbox(
+                        led_control_frame, 
+                        from_=0, 
+                        to=100, 
+                        width=5, 
+                        textvariable=value_var,
+                        validate='key',
+                        validatecommand=(self.root.register(self.validate_percentage), '%P')
+                    )
+                    entry.grid(column=2, row=row, sticky=tk.W, padx=5)
+                    ttk.Label(led_control_frame, text="%").grid(column=3, row=row, sticky=tk.W)
+                    
+                    # Use position instead of index in the board array to ensure consistent entry keys
+                    self.led_entries[(position, channel_name)] = entry
+                
+                # Scheduling section - one per board
+                schedule_frame = ttk.LabelFrame(frame, text="Board Schedule")
+                schedule_frame.grid(column=0, row=1, padx=5, pady=5, sticky=(tk.W, tk.E))
+                
+                # Create schedule controls
+                ttk.Label(schedule_frame, text="ON Time:").grid(column=0, row=0, padx=5, pady=5, sticky=tk.W)
+                on_time_var = tk.StringVar(value="08:00")
+                
+                # Add validation callback to variable
+                on_time_var.trace_add("write", lambda name, index, mode, b_idx=position, var=on_time_var: 
+                                   self.validate_time_entry(b_idx, "on", var.get()))
+                                   
+                on_time = ttk.Entry(schedule_frame, width=7, textvariable=on_time_var)
+                on_time.grid(column=1, row=0, padx=5, pady=5)
+                self.board_time_entries[(position, "on")] = on_time
+                
+                ttk.Label(schedule_frame, text="OFF Time:").grid(column=2, row=0, padx=5, pady=5, sticky=tk.W)
+                off_time_var = tk.StringVar(value="20:00")
+                
+                # Add validation callback to variable
+                off_time_var.trace_add("write", lambda name, index, mode, b_idx=position, var=off_time_var: 
+                                    self.validate_time_entry(b_idx, "off", var.get()))
+                                    
+                off_time = ttk.Entry(schedule_frame, width=7, textvariable=off_time_var)
+                off_time.grid(column=3, row=0, padx=5, pady=5)
+                self.board_time_entries[(position, "off")] = off_time
+                
+                # Schedule enable checkbox
+                schedule_var = tk.BooleanVar(value=False)
+                schedule_check = ttk.Checkbutton(
+                    schedule_frame, 
+                    text="Enable Scheduling",
+                    variable=schedule_var,
+                    command=lambda b_idx=position: self.update_board_schedule(b_idx)
                 )
-                entry.grid(column=2, row=row, sticky=tk.W, padx=5)
-                ttk.Label(led_control_frame, text="%").grid(column=3, row=row, sticky=tk.W)
+                schedule_check.grid(column=4, row=0, padx=10, pady=5, sticky=tk.W)
+                self.board_schedule_vars[position] = schedule_var
                 
-                self.led_entries[(i, channel_name)] = entry
-            
-            # Scheduling section - one per board
-            schedule_frame = ttk.LabelFrame(frame, text="Board Schedule")
-            schedule_frame.grid(column=0, row=1, padx=5, pady=5, sticky=(tk.W, tk.E))
-            
-            # Create schedule controls
-            ttk.Label(schedule_frame, text="ON Time:").grid(column=0, row=0, padx=5, pady=5, sticky=tk.W)
-            on_time_var = tk.StringVar(value="08:00")
-            
-            # Add validation callback to variable
-            on_time_var.trace_add("write", lambda name, index, mode, b_idx=i, var=on_time_var: 
-                               self.validate_time_entry(b_idx, "on", var.get()))
-                               
-            on_time = ttk.Entry(schedule_frame, width=7, textvariable=on_time_var)
-            on_time.grid(column=1, row=0, padx=5, pady=5)
-            self.board_time_entries[(i, "on")] = on_time
-            
-            ttk.Label(schedule_frame, text="OFF Time:").grid(column=2, row=0, padx=5, pady=5, sticky=tk.W)
-            off_time_var = tk.StringVar(value="20:00")
-            
-            # Add validation callback to variable
-            off_time_var.trace_add("write", lambda name, index, mode, b_idx=i, var=off_time_var: 
-                                self.validate_time_entry(b_idx, "off", var.get()))
-                                
-            off_time = ttk.Entry(schedule_frame, width=7, textvariable=off_time_var)
-            off_time.grid(column=3, row=0, padx=5, pady=5)
-            self.board_time_entries[(i, "off")] = off_time
-            
-            # Schedule enable checkbox
-            schedule_var = tk.BooleanVar(value=False)
-            schedule_check = ttk.Checkbutton(
-                schedule_frame, 
-                text="Enable Scheduling",
-                variable=schedule_var,
-                command=lambda b_idx=i: self.update_board_schedule(b_idx)
-            )
-            schedule_check.grid(column=4, row=0, padx=10, pady=5, sticky=tk.W)
-            self.board_schedule_vars[i] = schedule_var
-            
-            # Initialize the schedule data for this board
-            self.board_schedules[i] = {
-                "on_time": "08:00",
-                "off_time": "20:00",
-                "enabled": False,
-                "saved_values": {},
-                "active": True  # Add active flag, default to True
-            }
-                
-            # Individual apply button
-            ttk.Button(
-                frame, 
-                text="Apply", 
-                command=lambda b_idx=i: self.apply_board_settings(b_idx)
-            ).grid(column=0, row=2, pady=10, sticky=(tk.W, tk.E))
+                # Initialize the schedule data for this board
+                self.board_schedules[position] = {
+                    "on_time": "08:00",
+                    "off_time": "20:00",
+                    "enabled": False,
+                    "saved_values": {},
+                    "active": True  # Add active flag, default to True
+                }
+                    
+                # Individual apply button
+                ttk.Button(
+                    frame, 
+                    text="Apply", 
+                    command=lambda b_idx=position: self.apply_board_settings(b_idx)
+                ).grid(column=0, row=2, pady=10, sticky=(tk.W, tk.E))
+        
+        # Create a special style for placeholder frames
+        self.style.configure("Placeholder.TLabelframe", background='#f0f0f0')
+        self.style.configure("Placeholder.TLabel", background='#f0f0f0')
         
         # Update the display to show the first page
         self.current_page = 0
@@ -736,11 +811,20 @@ class LEDControlGUI:
     
     def apply_board_settings(self, board_idx):
         """Apply settings for a specific board"""
-        if board_idx >= len(self.boards):
-            messagebox.showerror("Error", "Invalid board index")
+        # Find the board corresponding to this position
+        board = None
+        board_id = board_idx + 1  # Convert 0-based index to 1-based ID
+        
+        for b in self.boards:
+            if b.board_id == board_id:
+                board = b
+                break
+        
+        if board is None:
+            # No board connected in this position
+            self.status_var.set(f"Error: Board {board_id} is not connected")
             return
             
-        board = self.boards[board_idx]
         duty_values = []
         
         # Check if scheduling is enabled and get active state
@@ -768,35 +852,35 @@ class LEDControlGUI:
         # If scheduling is active, we may need to override the duty values
         if scheduling_enabled and not schedule_active:
             # Board should be off according to schedule
-            self.status_var.set(f"Board {board_idx+1}: Applying zeros to hardware (schedule OFF time, UI settings preserved)")
+            self.status_var.set(f"Board {board_id}: Applying zeros to hardware (schedule OFF time, UI settings preserved)")
             # Send zeros to board, but don't change UI
             board.send_command([0, 0, 0, 0, 0, 0], 
                               callback=lambda success, msg: self.on_board_command_complete(
-                                  board_idx, success, msg, "during scheduled OFF time"))
+                                  board_id, success, msg, "during scheduled OFF time"))
         else:
             # Board should be on - apply actual values from UI
             status_msg = "Applying settings..."
             if scheduling_enabled and schedule_active:
                 status_msg = "Applying settings (during scheduled ON time)..."
             
-            self.status_var.set(f"Board {board_idx+1}: {status_msg}")
+            self.status_var.set(f"Board {board_id}: {status_msg}")
             
             board.send_command(duty_values, 
                               callback=lambda success, msg: self.on_board_command_complete(
-                                  board_idx, success, msg, 
+                                  board_id, success, msg, 
                                   "during scheduled ON time" if scheduling_enabled and schedule_active else None))
     
-    def on_board_command_complete(self, board_idx, success, message, extra_info=None):
+    def on_board_command_complete(self, board_id, success, message, extra_info=None):
         """Callback when a board command completes"""
         if success:
             if extra_info:
-                self.status_var.set(f"Board {board_idx+1}: Settings applied ({extra_info})")
+                self.status_var.set(f"Board {board_id}: Settings applied ({extra_info})")
             else:
-                self.status_var.set(f"Board {board_idx+1}: Settings applied successfully")
+                self.status_var.set(f"Board {board_id}: Settings applied successfully")
         else:
             # Use after() to ensure messagebox runs in the main thread
-            self.root.after(0, lambda: messagebox.showerror(f"Error - Board {board_idx+1}", message))
-            self.status_var.set(f"Board {board_idx+1}: Error - {message}")
+            self.root.after(0, lambda: messagebox.showerror(f"Error - Board {board_id}", message))
+            self.status_var.set(f"Board {board_id}: Error - {message}")
     
     def update_board_schedule(self, board_idx):
         """Update the schedule for a specific board"""
@@ -951,20 +1035,31 @@ class LEDControlGUI:
         
         # Detect connected boards
         try:
-            detected_boards = self.detect_xiao_boards()
+            detected_board_info = self.detect_xiao_boards()
             
-            if not detected_boards:
+            if not detected_board_info:
                 messagebox.showwarning("No Boards Found", "No XIAO RP2040 boards were detected.")
                 self.status_var.set("No boards found")
+                # Still create empty frames for all possible board positions
+                self.create_board_frames()
                 return
                 
-            # Create board connections
-            for port, serial_number in detected_boards:
-                self.boards.append(BoardConnection(port, serial_number))
+            # Create board connections - now with assigned board IDs
+            for port, serial_number in detected_board_info:
+                # Check if this serial number has a predefined ID
+                board_id = self.serial_to_id_map.get(serial_number)
+                
+                board = BoardConnection(port, serial_number, board_id)
+                self.boards.append(board)
+            
+            # Sort boards by their assigned ID if they have one
+            # Boards without assigned IDs will come last
+            self.boards.sort(key=lambda b: (b.board_id is None, b.board_id or float('inf')))
             
             # Create GUI elements for boards
             self.create_board_frames()
             
+            # Update status
             self.status_var.set(f"Found {len(self.boards)} board(s)")
         except Exception as e:
             messagebox.showerror("Error Scanning Boards", str(e))
@@ -988,24 +1083,26 @@ class LEDControlGUI:
             return False
     
     def apply_all_settings(self):
-        """Apply settings to all boards"""
-        success_count = 0
-        error_count = 0
+        """Apply settings to all connected boards"""
+        self.status_var.set("Applying settings to all connected boards...")
         
-        # Update status
-        self.status_var.set("Applying all settings...")
-        
-        # Track completion status
-        active_boards = len(self.boards)
-        self.pending_operations = active_boards
-        
-        for i in range(active_boards):
-            self.apply_board_settings(i)
+        # Apply settings to each board position that has a connected board
+        for position in range(MAX_BOARDS):
+            board_id = position + 1
+            # Check if there's a board connected at this position
+            board_connected = False
+            for board in self.boards:
+                if board.board_id == board_id:
+                    board_connected = True
+                    break
             
+            if board_connected:
+                self.apply_board_settings(position)
+        
         # Result will be updated by individual board callbacks
     
     def toggle_all_fans(self):
-        """Toggle all fans on or off on all boards"""
+        """Toggle all fans on or off on all connected boards"""
         if not self.boards:
             messagebox.showwarning("No Boards", "No boards available to control fans.")
             return
@@ -1022,9 +1119,9 @@ class LEDControlGUI:
             active_boards = len(self.boards)
             self.pending_fan_operations = active_boards
             
-            for i, board in enumerate(self.boards):
-                board.turn_fan_off(callback=lambda success, msg, idx=i: 
-                                  self.on_toggle_fan_complete(success, msg, idx, False))
+            for board in self.boards:
+                board.turn_fan_off(callback=lambda success, msg, board_id=board.board_id: 
+                                  self.on_toggle_fan_complete(success, msg, board_id, False))
                 
         else:
             # Turn on all fans
@@ -1045,17 +1142,17 @@ class LEDControlGUI:
             active_boards = len(self.boards)
             self.pending_fan_operations = active_boards
             
-            for i, board in enumerate(self.boards):
-                board.set_fan_speed(speed, callback=lambda success, msg, idx=i: 
-                                   self.on_toggle_fan_complete(success, msg, idx, True))
+            for board in self.boards:
+                board.set_fan_speed(speed, callback=lambda success, msg, board_id=board.board_id: 
+                                   self.on_toggle_fan_complete(success, msg, board_id, True))
     
-    def on_toggle_fan_complete(self, success, message, board_idx, is_on):
+    def on_toggle_fan_complete(self, success, message, board_id, is_on):
         """Callback when a toggle fan operation completes"""
         self.pending_fan_operations -= 1
         
         if not success:
             # Use after() to ensure messagebox runs in the main thread
-            self.root.after(0, lambda: messagebox.showerror(f"Error - Board {board_idx+1}", message))
+            self.root.after(0, lambda: messagebox.showerror(f"Error - Board {board_id}", message))
         
         if self.pending_fan_operations == 0:
             action = "ON" if is_on else "OFF"
@@ -1063,7 +1160,7 @@ class LEDControlGUI:
             self.status_var.set(f"All fans turned {action}{speed_info}")
     
     def apply_fan_settings(self):
-        """Apply the fan speed to all boards"""
+        """Apply the fan speed to all connected boards"""
         if not self.boards:
             messagebox.showwarning("No Boards", "No boards available to control fans.")
             return
@@ -1081,9 +1178,9 @@ class LEDControlGUI:
         active_boards = len(self.boards)
         self.pending_fan_operations = active_boards
         
-        for i, board in enumerate(self.boards):
-            board.set_fan_speed(speed, callback=lambda success, msg, idx=i: 
-                               self.on_fan_setting_complete(success, msg, idx, speed))
+        for board in self.boards:
+            board.set_fan_speed(speed, callback=lambda success, msg, board_id=board.board_id: 
+                               self.on_fan_setting_complete(success, msg, board_id, speed))
     
     def on_fan_setting_complete(self, success, message, board_idx, speed):
         """Callback when a fan setting operation completes"""
