@@ -691,10 +691,9 @@ class LEDControlGUI:
         
         # Fan speed control
         ttk.Label(fan_frame, text="Fan Speed:").grid(column=1, row=0, padx=(20, 5), pady=5)
-        fan_speed_entry = ttk.Spinbox(
+        # Replace Spinbox with Entry for better performance
+        fan_speed_entry = ttk.Entry(
             fan_frame,
-            from_=0,
-            to=100,
             width=5,
             textvariable=self.fan_speed_var,
             validate='key',
@@ -836,10 +835,9 @@ class LEDControlGUI:
                 ttk.Label(led_control_frame, text=channel_name).grid(column=1, row=row, sticky=tk.W, padx=5)
                 
                 value_var = tk.StringVar(value="0")
-                entry = ttk.Spinbox(
+                # Replace Spinbox with Entry for better performance
+                entry = ttk.Entry(
                     led_control_frame,
-                    from_=0,
-                    to=100,
                     width=5,
                     textvariable=value_var,
                     validate='key',
