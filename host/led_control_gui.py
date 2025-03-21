@@ -518,11 +518,15 @@ class LEDControlGUI:
         for frame in self.board_frames:
             frame.grid_remove()
         
+        # Count boards with chamber numbers in each range
+        boards_1_8 = sum(1 for board in self.boards if 1 <= board.chamber_number <= 8)
+        boards_9_16 = sum(1 for board in self.boards if 9 <= board.chamber_number <= 16)
+        
         # Update page label and navigation buttons
         if self.current_page == 0:
             self.page_label.config(text="Chambers 1-8")
             self.prev_button.config(state=tk.DISABLED)
-            self.next_button.config(state=tk.NORMAL if len(self.boards) > 8 else tk.DISABLED)
+            self.next_button.config(state=tk.NORMAL if boards_9_16 > 0 else tk.DISABLED)
             first_chamber = 1
             last_chamber = 8
         else:  # page 1
