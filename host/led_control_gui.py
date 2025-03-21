@@ -1079,7 +1079,7 @@ class LEDControlGUI:
             self.board_time_entries[(i, "on")] = on_time
             
             ttk.Label(schedule_frame, text="OFF Time:").grid(column=2, row=0, padx=5, pady=5, sticky=tk.W)
-            off_time_var = tk.StringVar(value="20:00")
+            off_time_var = tk.StringVar(value="00:00")
             
             # Add validation callback to variable
             off_time_var.trace_add("write", lambda name, index, mode, b_idx=i, var=off_time_var: 
@@ -1103,7 +1103,7 @@ class LEDControlGUI:
             # Initialize the schedule data for this board
             self.board_schedules[i] = {
                 "on_time": "08:00",
-                "off_time": "20:00",
+                "off_time": "00:00",
                 "enabled": False,
                 "saved_values": {},
                 "active": True  # Add active flag, default to True
@@ -1780,7 +1780,7 @@ class LEDControlGUI:
                     if board_idx in self.board_schedules:
                         board_settings["schedule"] = {
                             "on_time": self.board_schedules[board_idx].get("on_time", "08:00"),
-                            "off_time": self.board_schedules[board_idx].get("off_time", "20:00"),
+                            "off_time": self.board_schedules[board_idx].get("off_time", "00:00"),
                             "enabled": self.board_schedules[board_idx].get("enabled", False)
                         }
                     
@@ -1916,7 +1916,7 @@ class LEDControlGUI:
                             if board_idx in self.board_schedules:
                                 self.board_schedules[board_idx].update({
                                     "on_time": schedule.get("on_time", "08:00"),
-                                    "off_time": schedule.get("off_time", "20:00"),
+                                    "off_time": schedule.get("off_time", "00:00"),
                                     "enabled": schedule.get("enabled", False)
                                 })
                             
@@ -1978,7 +1978,7 @@ class LEDControlGUI:
         # Get time values
         current_time = datetime.now().strftime("%H:%M")
         on_time = schedule_info.get("on_time", "08:00")
-        off_time = schedule_info.get("off_time", "20:00")
+        off_time = schedule_info.get("off_time", "00:00")
         
         # Validate time formats
         if not self.validate_time_format(on_time) or not self.validate_time_format(off_time):
