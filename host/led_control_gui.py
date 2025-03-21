@@ -161,6 +161,149 @@ class BoardConnection:
             
             return False, "Max retries exceeded"
     
+    def _set_fan_speed_impl(self, percentage):
+        """Internal implementation of set_fan_speed operation"""
+        with self.lock:
+            if not self.is_connected:
+                if not self._connect_impl():
+                    return False, self.last_error
+            
+            retry_count = 0
+            while retry_count < self.max_retries:        
+                try:
+                    # Format: "FAN_SET percentage\n"
+                    command = f"FAN_SET {percentage}\n"
+                    
+                    # Clear any pending data
+                    if self.serial_conn.in_waiting > 0:
+                        self.serial_conn.reset_input_buffer()
+                    
+                    # Send command
+                    self.serial_conn.write(command.encode('utf-8'))
+                    
+                    # Read response with timeout
+                    start_time = time.time()
+                    response = ""
+                    while time.time() - start_time < 1.0:  # 1 second timeout
+                        if self.serial_conn.in_waiting > 0:
+                            data = self.serial_conn.read(self.serial_conn.in_waiting)
+                            response += data.decode('utf-8')
+                            if "OK" in response:
+                                self.fan_speed = percentage
+                                self.fan_enabled = percentage > 0
+                                return True, "Success"
+                            elif "ERR:" in response:
+                                return False, f"Error: {response}"
+                            
+                        time.sleep(0.05)
+                    
+                    retry_count += 1
+                    if retry_count < self.max_retries:
+                        time.sleep(0.5)  # Wait before retry
+                    else:
+                        return False, "Timeout waiting for response"
+                        
+                except Exception as e:
+                    self.is_connected = False
+                    return False, str(e)
+            
+            return False, "Max retries exceeded"
+    
+    def _turn_fan_on_impl(self):
+        """Internal implementation of turn_fan_on operation"""
+        with self.lock:
+            if not self.is_connected:
+                if not self._connect_impl():
+                    return False, self.last_error
+            
+            retry_count = 0
+            while retry_count < self.max_retries:        
+                try:
+                    # Format: "FAN_ON\n"
+                    command = "FAN_ON\n"
+                    
+                    # Clear any pending data
+                    if self.serial_conn.in_waiting > 0:
+                        self.serial_conn.reset_input_buffer()
+                    
+                    # Send command
+                    self.serial_conn.write(command.encode('utf-8'))
+                    
+                    # Read response with timeout
+                    start_time = time.time()
+                    response = ""
+                    while time.time() - start_time < 1.0:  # 1 second timeout
+                        if self.serial_conn.in_waiting > 0:
+                            data = self.serial_conn.read(self.serial_conn.in_waiting)
+                            response += data.decode('utf-8')
+                            if "OK" in response:
+                                self.fan_enabled = True
+                                return True, "Success"
+                            elif "ERR:" in response:
+                                return False, f"Error: {response}"
+                            
+                        time.sleep(0.05)
+                    
+                    retry_count += 1
+                    if retry_count < self.max_retries:
+                        time.sleep(0.5)  # Wait before retry
+                    else:
+                        return False, "Timeout waiting for response"
+                        
+                except Exception as e:
+                    self.is_connected = False
+                    return False, str(e)
+            
+            return False, "Max retries exceeded"
+    
+    def _turn_fan_off_impl(self):
+        """Internal implementation of turn_fan_off operation"""
+        with self.lock:
+            if not self.is_connected:
+                if not self._connect_impl():
+                    return False, self.last_error
+            
+            retry_count = 0
+            while retry_count < self.max_retries:        
+                try:
+                    # Format: "FAN_OFF\n"
+                    command = "FAN_OFF\n"
+                    
+                    # Clear any pending data
+                    if self.serial_conn.in_waiting > 0:
+                        self.serial_conn.reset_input_buffer()
+                    
+                    # Send command
+                    self.serial_conn.write(command.encode('utf-8'))
+                    
+                    # Read response with timeout
+                    start_time = time.time()
+                    response = ""
+                    while time.time() - start_time < 1.0:  # 1 second timeout
+                        if self.serial_conn.in_waiting > 0:
+                            data = self.serial_conn.read(self.serial_conn.in_waiting)
+                            response += data.decode('utf-8')
+                            if "OK" in response:
+                                self.fan_enabled = False
+                                self.fan_speed = 0
+                                return True, "Success"
+                            elif "ERR:" in response:
+                                return False, f"Error: {response}"
+                            
+                        time.sleep(0.05)
+                    
+                    retry_count += 1
+                    if retry_count < self.max_retries:
+                        time.sleep(0.5)  # Wait before retry
+                    else:
+                        return False, "Timeout waiting for response"
+                        
+                except Exception as e:
+                    self.is_connected = False
+                    return False, str(e)
+            
+            return False, "Max retries exceeded"
+    
     def start_command_processor(self):
         """Start the background command processor thread"""
         if not self.command_processor_running:
