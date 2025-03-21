@@ -334,6 +334,14 @@ class LEDControlGUI:
         self.scheduler_check_interval = 1000  # 1 second default
         self.adaptive_check_timer = None  # Store reference to scheduled timer
         
+        # NEW: Add widget update batching
+        self.widget_update_queue = queue.Queue()
+        self.update_batch_timer = None
+        self.update_batch_interval = 250  # ms between widget update batches
+        self.status_update_batch = []  # List to batch status updates
+        self.status_update_timer = None
+        self.is_updating_widgets = False
+        
         # Chamber mapping variables
         self.chamber_mapping = {}  # {serial_number: chamber_number}
         self.load_chamber_mapping()
@@ -346,6 +354,9 @@ class LEDControlGUI:
         
         # Start the scheduler using after() instead of a thread
         self.start_scheduler()
+        
+        # Start the widget update processor
+        self.process_widget_updates()
     
     def load_chamber_mapping(self):
         """Load the chamber to serial number mapping from the text file"""
@@ -500,6 +511,14 @@ class LEDControlGUI:
         # Cancel any scheduled after() calls
         if self.adaptive_check_timer:
             self.root.after_cancel(self.adaptive_check_timer)
+        
+        # Cancel widget update batch timer
+        if self.update_batch_timer:
+            self.root.after_cancel(self.update_batch_timer)
+            
+        # Cancel status update timer
+        if self.status_update_timer:
+            self.root.after_cancel(self.status_update_timer)
         
         # Stop the scheduler
         self.scheduler_running = False
@@ -729,14 +748,14 @@ class LEDControlGUI:
         if self.scheduler_running:
             self.scheduler_running = False
             self.scheduler_button_var.set("Start Scheduler")
-            self.status_var.set("Scheduler stopped")
+            self.set_status("Scheduler stopped")
             # Cancel any pending scheduled checks
             if self.adaptive_check_timer:
                 self.root.after_cancel(self.adaptive_check_timer)
         else:
             self.scheduler_running = True
             self.scheduler_button_var.set("Stop Scheduler")
-            self.status_var.set("Scheduler started")
+            self.set_status("Scheduler started")
             # Start the scheduler using after() method
             self.schedule_check()
     
@@ -756,6 +775,7 @@ class LEDControlGUI:
         current_hour, current_minute = current_datetime.hour, current_datetime.minute
         changes_made = False
         min_time_diff = float('inf')  # Track time to next scheduled event
+        updated_boards = set()  # Track which boards actually need updates
         
         # Process each board with a schedule
         for board_idx, schedule_info in list(self.board_schedules.items()):
@@ -806,19 +826,21 @@ class LEDControlGUI:
                         self.last_schedule_state[board_idx]["last_check"] = current_datetime
                         
                         # Add to the set of boards that need settings applied
-                        self.changed_boards.add(board_idx)
+                        updated_boards.add(board_idx)
                         
-                        # Log the change
+                        # Log the change - use batched status updates
                         chamber_number = self.boards[board_idx].chamber_number if board_idx < len(self.boards) else board_idx+1
                         action = "ON" if is_active else "OFF"
-                        self.status_var.set(f"Chamber {chamber_number}: Schedule activated - turning {action}")
+                        self.set_status(f"Chamber {chamber_number}: Schedule activated - turning {action}")
             except Exception as e:
                 # Log error but continue processing other boards
                 print(f"Error processing schedule for board {board_idx}: {str(e)}")
         
-        # Apply changes if any were made
-        if changes_made:
-            self.apply_changed_boards()
+        # Only update changed_boards if we actually have changes to apply
+        if updated_boards:
+            self.changed_boards.update(updated_boards)
+            # Apply changes but only if we haven't done so recently
+            self.apply_changed_boards(force=False)
         
         # Calculate adaptive timer interval
         adaptive_interval = self.calculate_adaptive_interval(min_time_diff)
@@ -845,18 +867,50 @@ class LEDControlGUI:
         
         return base_interval  # Default interval
     
-    def apply_changed_boards(self):
+    def apply_changed_boards(self, force=True):
         """Apply settings only to boards that have changed states"""
         if not hasattr(self, 'changed_boards') or not self.changed_boards:
             return
-            
-        # Apply settings only to boards that changed
-        for board_idx in self.changed_boards:
-            if board_idx < len(self.boards):
-                self.apply_board_settings(board_idx)
         
-        # Clear the set of changed boards
-        self.changed_boards = set()
+        # If not forcing an update, check if we've updated recently
+        if not force:
+            # Check if we have a "last_batch_update" timestamp
+            last_update = getattr(self, 'last_batch_update', 0)
+            current_time = time.time()
+            
+            # If we've updated within the last second, defer this update
+            if current_time - last_update < 1.0:
+                return
+                
+        # Apply settings only to boards that changed
+        boards_to_update = list(self.changed_boards)
+        
+        # Update at most 3 boards at once to avoid GUI freezing
+        max_updates = 3
+        if len(boards_to_update) > max_updates:
+            # Process some boards now, defer the rest
+            current_batch = boards_to_update[:max_updates]
+            deferred_batch = boards_to_update[max_updates:]
+            
+            # Process current batch
+            for board_idx in current_batch:
+                if board_idx < len(self.boards):
+                    self.apply_board_settings(board_idx)
+                self.changed_boards.remove(board_idx)
+                
+            # Schedule deferred batch with a small delay
+            self.root.after(100, self.apply_changed_boards, True)
+        else:
+            # Process all boards at once
+            for board_idx in boards_to_update:
+                if board_idx < len(self.boards):
+                    self.apply_board_settings(board_idx)
+            
+            # Clear the set of changed boards
+            self.changed_boards = set()
+        
+        # Update the last batch update timestamp
+        self.last_batch_update = time.time()
     
     def send_zeros_to_board(self, board_idx):
         """Send zeros to the board without changing UI values"""
@@ -1282,6 +1336,238 @@ class LEDControlGUI:
             if key in self.board_time_entries:
                 self.board_time_entries[key].config(foreground="red")
             return False
+    
+    # NEW: Add methods for batch widget updates
+    def queue_widget_update(self, widget_id, update_type, value):
+        """Queue a widget update to be processed in batches"""
+        self.widget_update_queue.put((widget_id, update_type, value))
+        
+        # Ensure the processor is running
+        if not self.update_batch_timer:
+            self.process_widget_updates()
+    
+    def process_widget_updates(self):
+        """Process queued widget updates in batches"""
+        if self.is_updating_widgets:
+            # Already processing updates, just reschedule
+            self.update_batch_timer = self.root.after(
+                self.update_batch_interval, self.process_widget_updates)
+            return
+            
+        self.is_updating_widgets = True
+        
+        # Create a dictionary to store only the latest update for each widget
+        updates_by_widget = {}
+        update_count = 0
+        
+        # Process all queued updates
+        try:
+            while not self.widget_update_queue.empty() and update_count < 50:  # Limit updates per batch
+                widget_id, update_type, value = self.widget_update_queue.get_nowait()
+                # Only keep the most recent update for each widget
+                updates_by_widget[(widget_id, update_type)] = value
+                update_count += 1
+        except queue.Empty:
+            pass
+        
+        # Apply the batched updates
+        for (widget_id, update_type), value in updates_by_widget.items():
+            try:
+                if update_type == "text":
+                    # Update text in an entry
+                    widget = self.led_entries.get(widget_id)
+                    if widget:
+                        current = widget.get()
+                        if current != value:
+                            widget.delete(0, tk.END)
+                            widget.insert(0, value)
+                elif update_type == "color":
+                    # Update foreground color
+                    widget = self.board_time_entries.get(widget_id)
+                    if widget:
+                        widget.config(foreground=value)
+                elif update_type == "check":
+                    # Update checkbox state
+                    var = self.board_schedule_vars.get(widget_id)
+                    if var and var.get() != value:
+                        var.set(value)
+                elif update_type == "enable":
+                    # Enable/disable a widget
+                    widget = self.board_frames[widget_id] if widget_id < len(self.board_frames) else None
+                    if widget:
+                        widget.config(state=value)
+            except Exception as e:
+                print(f"Error updating widget {widget_id}: {str(e)}")
+        
+        self.is_updating_widgets = False
+        
+        # Schedule the next batch processing
+        self.update_batch_timer = self.root.after(
+            self.update_batch_interval, self.process_widget_updates)
+    
+    # NEW: Add batch status update method
+    def set_status(self, message):
+        """Batch status updates to reduce status bar redraws"""
+        if not hasattr(self, 'status_update_batch'):
+            self.status_update_batch = []
+            
+        # Add the message to the batch
+        self.status_update_batch.append(message)
+        
+        # If there's already a pending update, let it handle this message
+        if self.status_update_timer:
+            return
+            
+        # Schedule the status update
+        self.status_update_timer = self.root.after(100, self.process_status_updates)
+    
+    def process_status_updates(self):
+        """Process batched status updates"""
+        self.status_update_timer = None
+        
+        if not self.status_update_batch:
+            return
+            
+        # Use the most recent status message
+        latest_message = self.status_update_batch[-1]
+        self.status_var.set(latest_message)
+        
+        # Clear the batch
+        self.status_update_batch = []
+    
+    def apply_board_settings(self, board_idx):
+        """Apply settings for a specific board"""
+        if board_idx >= len(self.boards):
+            messagebox.showerror("Error", "Invalid board index")
+            return
+        
+        board = self.boards[board_idx]
+        duty_values = []
+        
+        # Check if scheduling is enabled and get active state
+        scheduling_enabled = False
+        schedule_active = True
+        if board_idx in self.board_schedules:
+            scheduling_enabled = self.board_schedules[board_idx].get("enabled", False)
+            # If scheduling is enabled, check current active state
+            if scheduling_enabled:
+                schedule_active = self.check_board_active_state(board_idx)
+        
+        # Always save the current UI values to ensure they're preserved
+        self.save_board_ui_values(board_idx)
+        
+        # Get duty cycle values from UI for each channel
+        for channel in LED_CHANNELS:
+            try:
+                percentage = int(self.led_entries[(board_idx, channel)].get())
+                duty = int((percentage / 100.0) * 4095)
+                duty_values.append(duty)
+            except ValueError:
+                duty_values.append(0)
+        
+        # If scheduling is active, we may need to override the duty values
+        if scheduling_enabled and not schedule_active:
+            # Board should be off according to schedule
+            self.set_status(f"Board {board_idx+1}: Applying zeros to hardware (schedule OFF time, UI settings preserved)")
+            # Send zeros to board, but don't change UI
+            board.send_command([0, 0, 0, 0, 0, 0], 
+                              callback=lambda success, msg: self.on_board_command_complete(
+                                  board_idx, success, msg, "during scheduled OFF time"))
+        else:
+            # Board should be on - apply actual values from UI
+            status_msg = "Applying settings..."
+            if scheduling_enabled and schedule_active:
+                status_msg = "Applying settings (during scheduled ON time)..."
+            self.set_status(f"Board {board_idx+1}: {status_msg}")
+            board.send_command(duty_values, 
+                              callback=lambda success, msg: self.on_board_command_complete(
+                                  board_idx, success, msg, 
+                                  "during scheduled ON time" if scheduling_enabled and schedule_active else None))
+    
+    def on_board_command_complete(self, board_idx, success, message, extra_info=None):
+        """Callback when a board command completes"""
+        if board_idx >= len(self.boards):
+            return
+        
+        chamber_number = self.boards[board_idx].chamber_number
+        if success:
+            if extra_info:
+                self.set_status(f"Chamber {chamber_number}: Settings applied ({extra_info})")
+            else:
+                self.set_status(f"Chamber {chamber_number}: Settings applied successfully")
+        else:
+            # Use after() to ensure messagebox runs in the main thread
+            self.root.after(0, lambda: messagebox.showerror(f"Error - Chamber {chamber_number}", message))
+            self.set_status(f"Chamber {chamber_number}: Error - {message}")
+    
+    def update_board_schedule(self, board_idx):
+        """Update the schedule for a specific board"""
+        if board_idx not in self.board_schedules:
+            self.board_schedules[board_idx] = {"enabled": False, "active": True, "saved_values": {}}
+            
+        # Get current values from widgets
+        was_enabled = self.board_schedules[board_idx].get("enabled", False)
+        is_enabled = self.board_schedule_vars[board_idx].get()
+        
+        # Validate time entries before applying
+        on_time_valid = False
+        off_time_valid = False
+        
+        if (board_idx, "on") in self.board_time_entries:
+            on_time = self.board_time_entries[(board_idx, "on")].get()
+            on_time_valid = self.validate_time_format(on_time)
+            if on_time_valid:
+                self.board_schedules[board_idx]["on_time"] = on_time
+        
+        if (board_idx, "off") in self.board_time_entries:
+            off_time = self.board_time_entries[(board_idx, "off")].get()
+            off_time_valid = self.validate_time_format(off_time)
+            if off_time_valid:
+                self.board_schedules[board_idx]["off_time"] = off_time
+        
+        # If times are invalid, don't enable scheduling
+        if is_enabled and (not on_time_valid or not off_time_valid):
+            messagebox.showerror("Invalid Time Format", 
+                "Scheduling cannot be enabled with invalid time format. Please use HH:MM (24-hour) format.")
+            # Reset the checkbox - use queued update
+            self.queue_widget_update(board_idx, "check", False)
+            is_enabled = False
+        
+        self.board_schedules[board_idx]["enabled"] = is_enabled
+        # If scheduling was just enabled, check if we need to update active state
+        if is_enabled:
+            # Check current active state
+            is_active = self.check_board_active_state(board_idx)
+            # If we're outside active hours and just enabled scheduling, turn off lights
+            if not is_active:
+                # Outside of ON period - send zeros but keep UI values
+                self.set_status(f"Board {board_idx+1}: Schedule enabled, outside ON hours - turning lights off (settings preserved)")
+                # Send direct command to turn off LEDs without changing UI
+                self.send_zeros_to_board(board_idx)
+        elif was_enabled and not is_enabled:
+            # Scheduling was just disabled, ensure active state is reset
+            self.board_schedules[board_idx]["active"] = True
+            # Re-apply the current UI settings to restore the board state
+            self.set_status(f"Board {board_idx+1}: Schedule disabled - applying current settings")
+            self.apply_board_settings(board_idx)
+    
+    # Replace all status_var.set() calls with this method
+    def set_status(self, message):
+        """Batch status updates to reduce status bar redraws"""
+        if not hasattr(self, 'status_update_batch'):
+            self.status_update_batch = []
+            
+        # Add the message to the batch
+        self.status_update_batch.append(message)
+        
+        # If there's already a pending update, let it handle this message
+        if self.status_update_timer:
+            return
+            
+        # Schedule the status update
+        self.status_update_timer = self.root.after(100, self.process_status_updates)
+    
+    # ...rest of the class implementation remains the same...
 
 
 if __name__ == "__main__":
