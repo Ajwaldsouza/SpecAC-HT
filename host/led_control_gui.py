@@ -563,7 +563,7 @@ class LEDControlGUI:
         
         for i, board in enumerate(self.boards):
             chamber_number = board.chamber_number
-            frame = ttk.LabelFrame(self.boards_container, text=f"Chamber {chamber_number} (S/N: {board.serial_number})")
+            frame = ttk.LabelFrame(self.boards_container, text=f"Chamber {chamber_number}")
             self.board_frames.append(frame)
             
             # LED control section
