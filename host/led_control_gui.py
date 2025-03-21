@@ -327,6 +327,13 @@ class LEDControlGUI:
         self.scheduler_thread = None
         self.changed_boards = set()  # Track which boards changed
         
+        # Optimization: Add cache for last schedule check state to avoid unnecessary updates
+        self.last_schedule_state = {}  # {board_idx: {"active": bool, "last_check": timestamp}}
+        
+        # Optimization: Set default scheduler check interval (in milliseconds)
+        self.scheduler_check_interval = 1000  # 1 second default
+        self.adaptive_check_timer = None  # Store reference to scheduled timer
+        
         # Chamber mapping variables
         self.chamber_mapping = {}  # {serial_number: chamber_number}
         self.load_chamber_mapping()
@@ -336,6 +343,8 @@ class LEDControlGUI:
         self.boards_per_page = 8
         
         self.create_gui()
+        
+        # Start the scheduler using after() instead of a thread
         self.start_scheduler()
     
     def load_chamber_mapping(self):
@@ -488,6 +497,10 @@ class LEDControlGUI:
     
     def on_closing(self):
         """Clean up resources and close the application"""
+        # Cancel any scheduled after() calls
+        if self.adaptive_check_timer:
+            self.root.after_cancel(self.adaptive_check_timer)
+        
         # Stop the scheduler
         self.scheduler_running = False
         if self.scheduler_thread and self.scheduler_thread.is_alive():
@@ -717,285 +730,120 @@ class LEDControlGUI:
             self.scheduler_running = False
             self.scheduler_button_var.set("Start Scheduler")
             self.status_var.set("Scheduler stopped")
+            # Cancel any pending scheduled checks
+            if self.adaptive_check_timer:
+                self.root.after_cancel(self.adaptive_check_timer)
         else:
             self.scheduler_running = True
             self.scheduler_button_var.set("Stop Scheduler")
             self.status_var.set("Scheduler started")
-            if not self.scheduler_thread or not self.scheduler_thread.is_alive():
-                self.start_scheduler()
+            # Start the scheduler using after() method
+            self.schedule_check()
     
     def start_scheduler(self):
-        """Start the scheduler thread"""
+        """Start the scheduler using Tkinter's after() method"""
         self.scheduler_running = True
         self.scheduler_button_var.set("Stop Scheduler")
-        self.scheduler_thread = threading.Thread(target=self.schedule_checker, daemon=True)
-        self.scheduler_thread.start()
+        # Directly call schedule_check instead of starting a thread
+        self.schedule_check()
     
-    def is_time_between(self, current_time, start_time, end_time):
-        """Check if current time is between start and end times, handling overnight periods"""
-        try:
-            # More efficient time comparison without datetime objects
-            # Convert times to minutes since midnight
-            h1, m1 = map(int, current_time.split(':'))
-            h2, m2 = map(int, start_time.split(':'))
-            h3, m3 = map(int, end_time.split(':'))
-            
-            current_mins = h1 * 60 + m1
-            start_mins = h2 * 60 + m2
-            end_mins = h3 * 60 + m3
-            
-            if start_mins <= end_mins:
-                # Simple case: start time is before end time (e.g., 08:00 to 20:00)
-                return start_mins <= current_mins <= end_mins
-            else:
-                # Wrap-around case: end time is before start time (e.g., 20:00 to 08:00 next day)
-                return current_mins >= start_mins or current_mins <= end_mins
-        except ValueError:
-            # If any time format is invalid, default to True (safer)
-            return True
-    
-    def apply_board_settings(self, board_idx):
-        """Apply settings for a specific board"""
-        if board_idx >= len(self.boards):
-            messagebox.showerror("Error", "Invalid board index")
+    def schedule_check(self):
+        """Periodic scheduler check using after() instead of a continuous thread"""
+        if not self.scheduler_running:
             return
-        
-        board = self.boards[board_idx]
-        duty_values = []
-        
-        # Check if scheduling is enabled and get active state
-        scheduling_enabled = False
-        schedule_active = True
-        if board_idx in self.board_schedules:
-            scheduling_enabled = self.board_schedules[board_idx].get("enabled", False)
-            # If scheduling is enabled, check current active state
-            if scheduling_enabled:
-                schedule_active = self.check_board_active_state(board_idx)
-        
-        # Always save the current UI values to ensure they're preserved
-        self.save_board_ui_values(board_idx)
-        
-        # Get duty cycle values from UI for each channel
-        for channel in LED_CHANNELS:
-            try:
-                percentage = int(self.led_entries[(board_idx, channel)].get())
-                duty = int((percentage / 100.0) * 4095)
-                duty_values.append(duty)
-            except ValueError:
-                duty_values.append(0)
-        
-        # If scheduling is active, we may need to override the duty values
-        if scheduling_enabled and not schedule_active:
-            # Board should be off according to schedule
-            self.status_var.set(f"Board {board_idx+1}: Applying zeros to hardware (schedule OFF time, UI settings preserved)")
-            # Send zeros to board, but don't change UI
-            board.send_command([0, 0, 0, 0, 0, 0], 
-                              callback=lambda success, msg: self.on_board_command_complete(
-                                  board_idx, success, msg, "during scheduled OFF time"))
-        else:
-            # Board should be on - apply actual values from UI
-            status_msg = "Applying settings..."
-            if scheduling_enabled and schedule_active:
-                status_msg = "Applying settings (during scheduled ON time)..."
-            self.status_var.set(f"Board {board_idx+1}: {status_msg}")
-            board.send_command(duty_values, 
-                              callback=lambda success, msg: self.on_board_command_complete(
-                                  board_idx, success, msg, 
-                                  "during scheduled ON time" if scheduling_enabled and schedule_active else None))
-    
-    def on_board_command_complete(self, board_idx, success, message, extra_info=None):
-        """Callback when a board command completes"""
-        if board_idx >= len(self.boards):
-            return
-        
-        chamber_number = self.boards[board_idx].chamber_number
-        if success:
-            if extra_info:
-                self.status_var.set(f"Chamber {chamber_number}: Settings applied ({extra_info})")
-            else:
-                self.status_var.set(f"Chamber {chamber_number}: Settings applied successfully")
-        else:
-            # Use after() to ensure messagebox runs in the main thread
-            self.root.after(0, lambda: messagebox.showerror(f"Error - Chamber {chamber_number}", message))
-            self.status_var.set(f"Chamber {chamber_number}: Error - {message}")
-    
-    def update_board_schedule(self, board_idx):
-        """Update the schedule for a specific board"""
-        if board_idx not in self.board_schedules:
-            self.board_schedules[board_idx] = {"enabled": False, "active": True, "saved_values": {}}
             
-        # Get current values from widgets
-        was_enabled = self.board_schedules[board_idx].get("enabled", False)
-        is_enabled = self.board_schedule_vars[board_idx].get()
+        current_datetime = datetime.now()
+        current_hour, current_minute = current_datetime.hour, current_datetime.minute
+        changes_made = False
+        min_time_diff = float('inf')  # Track time to next scheduled event
         
-        # Validate time entries before applying
-        on_time_valid = False
-        off_time_valid = False
-        
-        if (board_idx, "on") in self.board_time_entries:
-            on_time = self.board_time_entries[(board_idx, "on")].get()
-            on_time_valid = self.validate_time_format(on_time)
-            if on_time_valid:
-                self.board_schedules[board_idx]["on_time"] = on_time
-        
-        if (board_idx, "off") in self.board_time_entries:
-            off_time = self.board_time_entries[(board_idx, "off")].get()
-            off_time_valid = self.validate_time_format(off_time)
-            if off_time_valid:
-                self.board_schedules[board_idx]["off_time"] = off_time
-        
-        # If times are invalid, don't enable scheduling
-        if is_enabled and (not on_time_valid or not off_time_valid):
-            messagebox.showerror("Invalid Time Format", 
-                "Scheduling cannot be enabled with invalid time format. Please use HH:MM (24-hour) format.")
-            # Reset the checkbox
-            self.board_schedule_vars[board_idx].set(False)
-            is_enabled = False
-        
-        self.board_schedules[board_idx]["enabled"] = is_enabled
-        # If scheduling was just enabled, check if we need to update active state
-        if is_enabled:
-            # Check current active state
-            is_active = self.check_board_active_state(board_idx)
-            # If we're outside active hours and just enabled scheduling, turn off lights
-            if not is_active:
-                # Outside of ON period - send zeros but keep UI values
-                self.status_var.set(f"Board {board_idx+1}: Schedule enabled, outside ON hours - turning lights off (settings preserved)")
-                # Send direct command to turn off LEDs without changing UI
-                self.send_zeros_to_board(board_idx)
-        elif was_enabled and not is_enabled:
-            # Scheduling was just disabled, ensure active state is reset
-            self.board_schedules[board_idx]["active"] = True
-            # Re-apply the current UI settings to restore the board state
-            self.status_var.set(f"Board {board_idx+1}: Schedule disabled - applying current settings")
-            self.apply_board_settings(board_idx)
-    
-    def send_zeros_to_board(self, board_idx):
-        """Send zeros to the board without changing UI values"""
-        if board_idx >= len(self.boards):
-            return False
-        
-        board = self.boards[board_idx]
-        # Send command with all zeros directly (non-blocking now)
-        board.send_command([0, 0, 0, 0, 0, 0])
-        return True
-    
-    def schedule_checker(self):
-        """Background thread to check and apply scheduled settings"""
-        # Track the last activation time for each board
-        last_activation = {}  # {board_idx: {"on": datetime, "off": datetime}}
-        
-        # Cache for parsed time values to avoid repeated parsing
-        time_cache = {}  # {board_idx: {"on_parsed": (hour, minute), "off_parsed": (hour, minute)}}
-        
-        # Adaptive sleep time - check more frequently near scheduled times
-        base_sleep_time = 10  # seconds
-        
-        while True:
-            if not self.scheduler_running:
-                time.sleep(1)
+        # Process each board with a schedule
+        for board_idx, schedule_info in list(self.board_schedules.items()):
+            if not schedule_info.get("enabled", False):
                 continue
+                
+            # Get on_time and off_time
+            on_time = schedule_info.get("on_time", "")
+            off_time = schedule_info.get("off_time", "")
             
-            current_datetime = datetime.now()
-            current_hour, current_minute = current_datetime.hour, current_datetime.minute
-            changes_made = False
-            min_time_diff = float('inf')  # Track time to next scheduled event
-            
-            # Process each board with a schedule
-            for board_idx, schedule_info in list(self.board_schedules.items()):
-                if not schedule_info.get("enabled", False):
-                    continue
+            # Extract hours and minutes
+            try:
+                on_match = self.time_pattern.match(on_time)
+                off_match = self.time_pattern.match(off_time)
+                
+                if on_match and off_match:
+                    on_hour, on_minute = int(on_match.group(1)), int(on_match.group(2))
+                    off_hour, off_minute = int(off_match.group(1)), int(off_match.group(2))
                     
-                # Initialize tracking for this board if needed
-                if board_idx not in last_activation:
-                    last_activation[board_idx] = {"on": None, "off": None}
-                
-                # Parse on_time and off_time (use cached values if available)
-                on_time = schedule_info.get("on_time", "")
-                off_time = schedule_info.get("off_time", "")
-                
-                # Update cached time values if schedule times changed
-                if board_idx not in time_cache or time_cache[board_idx].get("on_time") != on_time:
-                    match = self.time_pattern.match(on_time)
-                    if match:
-                        on_hour, on_minute = int(match.group(1)), int(match.group(2))
-                        if board_idx not in time_cache:
-                            time_cache[board_idx] = {}
-                        time_cache[board_idx]["on_parsed"] = (on_hour, on_minute)
-                        time_cache[board_idx]["on_time"] = on_time
-                
-                if board_idx not in time_cache or time_cache[board_idx].get("off_time") != off_time:
-                    match = self.time_pattern.match(off_time)
-                    if match:
-                        off_hour, off_minute = int(match.group(1)), int(match.group(2))
-                        if board_idx not in time_cache:
-                            time_cache[board_idx] = {}
-                        time_cache[board_idx]["off_parsed"] = (off_hour, off_minute)
-                        time_cache[board_idx]["off_time"] = off_time
-                
-                # Skip if time values aren't cached (invalid format)
-                if board_idx not in time_cache or "on_parsed" not in time_cache[board_idx] or "off_parsed" not in time_cache[board_idx]:
-                    continue
-                
-                on_hour, on_minute = time_cache[board_idx]["on_parsed"]
-                off_hour, off_minute = time_cache[board_idx]["off_parsed"]
-                
-                # Calculate time differences more efficiently using minutes since midnight
-                current_minutes = current_hour * 60 + current_minute
-                on_minutes = on_hour * 60 + on_minute
-                off_minutes = off_hour * 60 + off_minute
-                
-                # Calculate minutes until next on/off event (handling day wraparound)
-                mins_until_on = (on_minutes - current_minutes) % (24 * 60)
-                mins_until_off = (off_minutes - current_minutes) % (24 * 60)
-                
-                # Update minimum time difference for adaptive sleep
-                min_time_diff = min(min_time_diff, mins_until_on, mins_until_off)
-                
-                # Check if we're within 1 minute of the on_time
-                if mins_until_on <= 1 or mins_until_on >= (24 * 60 - 1):
-                    # Check if we haven't triggered this recently
-                    if last_activation[board_idx]["on"] is None or \
-                       (current_datetime - last_activation[board_idx]["on"]).total_seconds() > 120:
-                        if not schedule_info.get("active", True):  # Only change if currently inactive
-                            # Time to turn on LEDs
-                            schedule_info["active"] = True
-                            changes_made = True
-                            # Use board's chamber number instead of index for more meaningful logs
-                            chamber_number = self.boards[board_idx].chamber_number if board_idx < len(self.boards) else board_idx+1
-                            self.status_var.set(f"Chamber {chamber_number}: Schedule activated - turning ON")
-                            last_activation[board_idx]["on"] = current_datetime
-                            self.changed_boards.add(board_idx)
-                
-                # Check if we're within 1 minute of the off_time
-                if mins_until_off <= 1 or mins_until_off >= (24 * 60 - 1):
-                    # Check if we haven't triggered this recently
-                    if last_activation[board_idx]["off"] is None or \
-                       (current_datetime - last_activation[board_idx]["off"]).total_seconds() > 120:
-                        if schedule_info.get("active", True):  # Only change if currently active
-                            # Time to turn off LEDs
-                            schedule_info["active"] = False
-                            changes_made = True
-                            # Use board's chamber number instead of index for more meaningful logs
-                            chamber_number = self.boards[board_idx].chamber_number if board_idx < len(self.boards) else board_idx+1
-                            self.status_var.set(f"Chamber {chamber_number}: Schedule activated - turning OFF (settings preserved)")
-                            last_activation[board_idx]["off"] = current_datetime
-                            self.changed_boards.add(board_idx)
-            
-            # Apply changes if any were made - but only to boards that changed
-            if changes_made:
-                self.root.after(0, self.apply_changed_boards)
-            
-            # Adaptive sleep based on time to next event
-            sleep_time = base_sleep_time
-            if min_time_diff != float('inf'):
-                # Check more frequently when close to a scheduled event
-                if min_time_diff <= 5:
-                    sleep_time = 1
-                elif min_time_diff <= 15:
-                    sleep_time = 5
-            
-            time.sleep(sleep_time)
+                    # Calculate minutes since midnight for easy comparison
+                    current_minutes = current_hour * 60 + current_minute
+                    on_minutes = on_hour * 60 + on_minute
+                    off_minutes = off_hour * 60 + off_minute
+                    
+                    # Calculate minutes until next on/off event (handling day wraparound)
+                    mins_until_on = (on_minutes - current_minutes) % (24 * 60)
+                    mins_until_off = (off_minutes - current_minutes) % (24 * 60)
+                    
+                    # Update minimum time difference for adaptive scheduling
+                    min_time_diff = min(min_time_diff, mins_until_on, mins_until_off)
+                    
+                    # Determine if board should be active now
+                    is_active = self.is_time_between(f"{current_hour:02d}:{current_minute:02d}", on_time, off_time)
+                    
+                    # Get previous state from cache, defaulting to None for first check
+                    prev_state = self.last_schedule_state.get(board_idx, {}).get("active", None)
+                    
+                    # Only process if state has changed or this is the first check
+                    if prev_state is None or prev_state != is_active:
+                        # Update our tracking
+                        schedule_info["active"] = is_active
+                        changes_made = True
+                        
+                        # Update the schedule state cache
+                        if board_idx not in self.last_schedule_state:
+                            self.last_schedule_state[board_idx] = {}
+                        self.last_schedule_state[board_idx]["active"] = is_active
+                        self.last_schedule_state[board_idx]["last_check"] = current_datetime
+                        
+                        # Add to the set of boards that need settings applied
+                        self.changed_boards.add(board_idx)
+                        
+                        # Log the change
+                        chamber_number = self.boards[board_idx].chamber_number if board_idx < len(self.boards) else board_idx+1
+                        action = "ON" if is_active else "OFF"
+                        self.status_var.set(f"Chamber {chamber_number}: Schedule activated - turning {action}")
+            except Exception as e:
+                # Log error but continue processing other boards
+                print(f"Error processing schedule for board {board_idx}: {str(e)}")
+        
+        # Apply changes if any were made
+        if changes_made:
+            self.apply_changed_boards()
+        
+        # Calculate adaptive timer interval
+        adaptive_interval = self.calculate_adaptive_interval(min_time_diff)
+        
+        # Schedule the next check using adaptive interval
+        self.adaptive_check_timer = self.root.after(adaptive_interval, self.schedule_check)
+    
+    def calculate_adaptive_interval(self, min_time_diff):
+        """Calculate adaptive timer interval based on time to next event"""
+        # Convert from minutes to milliseconds
+        base_interval = 10000  # 10 seconds default
+        
+        if min_time_diff != float('inf'):
+            # Check more frequently when close to a scheduled event
+            if min_time_diff <= 1:  # Within 1 minute
+                return 1000  # Check every second
+            elif min_time_diff <= 5:  # Within 5 minutes
+                return 5000  # Check every 5 seconds
+            elif min_time_diff <= 15:  # Within 15 minutes
+                return 30000  # Check every 30 seconds
+            else:
+                # If next event is far, check less frequently
+                return 60000  # Check every minute
+        
+        return base_interval  # Default interval
     
     def apply_changed_boards(self):
         """Apply settings only to boards that have changed states"""
