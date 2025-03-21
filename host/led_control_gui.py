@@ -586,6 +586,9 @@ class LEDControlGUI:
         self.board_frames = []
         self.led_entries = {}  # {(board_idx, channel): entry_widget}
         
+        # NEW: Add direct chamber-to-board mapping for O(1) lookups
+        self.chamber_to_board_idx = {}  # {chamber_number: board_idx}
+        
         # Track master light state
         self.master_on = True
         self.saved_values = {}  # To store values when turning off
@@ -626,6 +629,10 @@ class LEDControlGUI:
         # Cache chamber mapping
         self.chamber_mapping = {}  # {serial_number: chamber_number}
         self.reverse_chamber_mapping = {}  # {chamber_number: serial_number}
+        
+        # NEW: Add lookup to find board by serial number efficiently
+        self.serial_to_board_idx = {}  # {serial_number: board_idx}
+        
         self.load_chamber_mapping()
         
         # Pagination variables
@@ -634,6 +641,9 @@ class LEDControlGUI:
         
         # Cache command batch sizes for higher performance during bulk operations
         self.max_concurrent_commands = 5
+        
+        # NEW: Cache calculated duty cycles for percentages
+        self.duty_cycle_cache = {i: int((i / 100.0) * 4095) for i in range(101)}
         
         # Create and cache validation commands
         self.setup_validation_commands()
@@ -902,9 +912,9 @@ class LEDControlGUI:
         for frame in self.board_frames:
             frame.grid_remove()
         
-        # Count boards with chamber numbers in each range
-        boards_1_8 = sum(1 for board in self.boards if 1 <= board.chamber_number <= 8)
-        boards_9_16 = sum(1 for board in self.boards if 9 <= board.chamber_number <= 16)
+        # NEW: More efficient counting using dictionary comprehension and sum
+        boards_1_8 = sum(1 for chamber in self.chamber_to_board_idx if 1 <= chamber <= 8)
+        boards_9_16 = sum(1 for chamber in self.chamber_to_board_idx if 9 <= chamber <= 16)
         
         # Update page label and navigation buttons
         if self.current_page == 0:
@@ -920,19 +930,19 @@ class LEDControlGUI:
             first_chamber = 9
             last_chamber = 16
         
-        # Display boards based on chamber number
+        # NEW: More efficient display of boards using chamber-to-board mapping
         displayed_count = 0
-        for i, board in enumerate(self.boards):
-            chamber_number = board.chamber_number
-            
-            if first_chamber <= chamber_number <= last_chamber:
+        for chamber_number in range(first_chamber, last_chamber + 1):
+            if chamber_number in self.chamber_to_board_idx:
+                board_idx = self.chamber_to_board_idx[chamber_number]
+                
                 # Calculate position within the page (2 rows x 4 columns)
                 relative_position = chamber_number - first_chamber
                 row = relative_position // 4
                 col = relative_position % 4
                 
-                if i < len(self.board_frames):
-                    self.board_frames[i].grid(row=row, column=col, padx=5, pady=5, sticky=(tk.N, tk.W, tk.E, tk.S))
+                if board_idx < len(self.board_frames):
+                    self.board_frames[board_idx].grid(row=row, column=col, padx=5, pady=5, sticky=(tk.N, tk.W, tk.E, tk.S))
                     displayed_count += 1
         
         # Update status message to show how many chambers are displayed
@@ -946,11 +956,21 @@ class LEDControlGUI:
         self.board_frames = []
         self.led_entries = {}
         
+        # NEW: Reset board lookup dictionaries
+        self.chamber_to_board_idx = {}
+        self.serial_to_board_idx = {}
+        
         # Sort boards by chamber number
         self.boards.sort(key=lambda b: b.chamber_number)
         
         for i, board in enumerate(self.boards):
             chamber_number = board.chamber_number
+            serial_number = board.serial_number
+            
+            # NEW: Add chamber and serial number to lookup dictionaries
+            self.chamber_to_board_idx[chamber_number] = i
+            self.serial_to_board_idx[serial_number] = i
+            
             frame = ttk.LabelFrame(self.boards_container, text=f"Chamber {chamber_number}")
             self.board_frames.append(frame)
             
@@ -1123,21 +1143,26 @@ class LEDControlGUI:
             return
             
         current_datetime = datetime.now()
+        current_time_str = current_datetime.strftime("%H:%M")
         current_hour, current_minute = current_datetime.hour, current_datetime.minute
         changes_made = False
         min_time_diff = float('inf')  # Track time to next scheduled event
         updated_boards = set()  # Track which boards actually need updates
         
+        # NEW: Pre-fetch all needed schedule information for a batch check
+        active_schedule_boards = {
+            board_idx: schedule_info 
+            for board_idx, schedule_info in self.board_schedules.items() 
+            if schedule_info.get("enabled", False)
+        }
+        
         # Process each board with a schedule
-        for board_idx, schedule_info in list(self.board_schedules.items()):
-            if not schedule_info.get("enabled", False):
-                continue
-                
+        for board_idx, schedule_info in active_schedule_boards.items():
             # Get on_time and off_time
             on_time = schedule_info.get("on_time", "")
             off_time = schedule_info.get("off_time", "")
             
-            # Extract hours and minutes
+            # Extract hours and minutes - use cached pattern
             try:
                 on_match = self.time_pattern.match(on_time)
                 off_match = self.time_pattern.match(off_time)
@@ -1159,7 +1184,7 @@ class LEDControlGUI:
                     min_time_diff = min(min_time_diff, mins_until_on, mins_until_off)
                     
                     # Determine if board should be active now
-                    is_active = self.is_time_between(f"{current_hour:02d}:{current_minute:02d}", on_time, off_time)
+                    is_active = self.is_time_between(current_time_str, on_time, off_time)
                     
                     # Get previous state from cache, defaulting to None for first check
                     prev_state = self.last_schedule_state.get(board_idx, {}).get("active", None)
@@ -1228,8 +1253,8 @@ class LEDControlGUI:
             # If we've updated within the last second, defer this update
             if current_time - last_update < 1.0:
                 return
-                
-        # Apply settings only to boards that changed
+        
+        # NEW: Convert set to list once to avoid copying during iteration
         boards_to_update = list(self.changed_boards)
         
         # Update at most 3 boards at once to avoid GUI freezing
@@ -1237,7 +1262,6 @@ class LEDControlGUI:
         if len(boards_to_update) > max_updates:
             # Process some boards now, defer the rest
             current_batch = boards_to_update[:max_updates]
-            deferred_batch = boards_to_update[max_updates:]
             
             # Process current batch
             for board_idx in current_batch:
@@ -1254,7 +1278,7 @@ class LEDControlGUI:
                     self.apply_board_settings(board_idx)
             
             # Clear the set of changed boards
-            self.changed_boards = set()
+            self.changed_boards.clear()  # More efficient than creating a new empty set
         
         # Update the last batch update timestamp
         self.last_batch_update = time.time()
@@ -1557,9 +1581,14 @@ class LEDControlGUI:
             for board_key, board_settings in settings.items():
                 try:
                     # Extract chamber number (format: "chamber_X")
-                    chamber_number = int(self.chamber_num_pattern.match(board_key).group(1))
-                    # Find the board index for this chamber number
-                    board_idx = next((i for i, b in enumerate(self.boards) if b.chamber_number == chamber_number), None)
+                    match = self.chamber_num_pattern.match(board_key)
+                    if not match:
+                        continue
+                        
+                    chamber_number = int(match.group(1))
+                    
+                    # NEW: Use chamber-to-board mapping for O(1) lookup
+                    board_idx = self.chamber_to_board_idx.get(chamber_number)
                     if board_idx is None:
                         continue  # Skip if chamber number is not found
                     
