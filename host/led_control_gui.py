@@ -567,7 +567,7 @@ class LEDControlGUI:
             self.board_frames.append(frame)
             
             # LED control section
-            led_control_frame = ttk.LabelFrame(frame, text="LED Controls")
+            led_control_frame = ttk.Frame(frame)
             led_control_frame.grid(column=0, row=0, padx=5, pady=5, sticky=(tk.W, tk.E))
             
             # Add header row for LED controls
@@ -598,7 +598,7 @@ class LEDControlGUI:
                 self.led_entries[(i, channel_name)] = entry
             
             # Scheduling section - one per board
-            schedule_frame = ttk.LabelFrame(frame, text="Board Schedule")
+            schedule_frame = ttk.Frame(frame)
             schedule_frame.grid(column=0, row=1, padx=5, pady=5, sticky=(tk.W, tk.E))
             
             # Create schedule controls
