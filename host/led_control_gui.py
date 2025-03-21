@@ -1331,17 +1331,15 @@ class LEDControlGUI:
             current_time = time.time()
             
             # If we've updated within the last second, defer this update
-            if current_time - last_update < 1.0:ns soon
-                return_time - last_update < 1.0:
+            if current_time - last_update < 1.0:
                 self.root.after(1000, lambda: self.apply_changed_boards(True))
+        
         # NEW: Convert set to list once to avoid copying during iteration
         boards_to_update = list(self.changed_boards)
-        # NEW: Convert set to list once to avoid copying during iteration
+        
         # Update at most 3 boards at once to avoid GUI freezing
-        max_updates = 3g changes to boards: {boards_to_update}")  # Debug logging
-        if len(boards_to_update) > max_updates:
-            # Process some boards now, defer the restI freezing
-            current_batch = boards_to_update[:max_updates]
+        max_updates = 3
+        
         if len(boards_to_update) > max_updates:
             # Process some boards now, defer the rest
             current_batch = boards_to_update[:max_updates]
