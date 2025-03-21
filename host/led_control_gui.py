@@ -1331,14 +1331,17 @@ class LEDControlGUI:
             current_time = time.time()
             
             # If we've updated within the last second, defer this update
-            if current_time - last_update < 1.0:
-                return
-        
+            if current_time - last_update < 1.0:ns soon
+                return_time - last_update < 1.0:
+                self.root.after(1000, lambda: self.apply_changed_boards(True))
         # NEW: Convert set to list once to avoid copying during iteration
         boards_to_update = list(self.changed_boards)
-        
+        # NEW: Convert set to list once to avoid copying during iteration
         # Update at most 3 boards at once to avoid GUI freezing
-        max_updates = 3
+        max_updates = 3g changes to boards: {boards_to_update}")  # Debug logging
+        if len(boards_to_update) > max_updates:
+            # Process some boards now, defer the restI freezing
+            current_batch = boards_to_update[:max_updates]
         if len(boards_to_update) > max_updates:
             # Process some boards now, defer the rest
             current_batch = boards_to_update[:max_updates]
@@ -1347,10 +1350,12 @@ class LEDControlGUI:
             for board_idx in current_batch:
                 if board_idx < len(self.boards):
                     self.apply_board_settings(board_idx)
-                self.changed_boards.remove(board_idx)
+                    # Only remove AFTER successful processing 
+                    if board_idx in self.changed_boards:
+                        self.changed_boards.remove(board_idx)
                 
-            # Schedule deferred batch with a small delay
-            self.root.after(100, self.apply_changed_boards, True)
+            # Schedule deferred batch with a small delay - ALWAYS FORCE=TRUE for deferred batch
+            self.root.after(100, lambda: self.apply_changed_boards(True))
         else:
             # Process all boards at once
             for board_idx in boards_to_update:
@@ -2399,8 +2404,8 @@ class LEDControlGUI:
                             self.status_var.set(f"Export error: {action.message}")
                 
                 elif isinstance(action, SchedulerUpdate):
-                    # Update board schedule state
-                    if action.board_idx in self.board_schedules:
+                    # Update board schedule state - FORCE TO TRUE FOR SCHEDULE CHANGES
+                    if action.board_idx in self.board_schedules: # Changed from False to True
                         self.board_schedules[action.board_idx]["active"] = action.active
                         # Add to changed boards set for applying settings
                         self.changed_boards.add(action.board_idx)
