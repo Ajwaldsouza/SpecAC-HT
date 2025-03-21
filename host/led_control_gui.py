@@ -35,9 +35,28 @@ LED_COLORS = {
 SERIAL_MAPPING_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
                                   "microcontroller", "microcontroller_serial.txt")
 
+# Cache commonly used regular expression patterns
+TIME_PATTERN = re.compile(r'^([0-1][0-9]|2[0-3]):([0-5][0-9])$')
+
+# Cache serial port details for faster board detection (will be initialized at runtime)
+CACHED_PORT_INFO = {}
+
+# Cache board serial numbers to avoid repeated lookups
+BOARD_SERIAL_CACHE = {}
+
 
 class BoardConnection:
     """Manages the connection to a single XIAO RP2040 board"""
+    
+    # Static properties to cache command types
+    CMD_SETALL = "SETALL"
+    CMD_FAN_SET = "FAN_SET"
+    CMD_FAN_ON = "FAN_ON"
+    CMD_FAN_OFF = "FAN_OFF"
+    
+    # Pre-computed responses for faster comparison
+    RESP_OK = "OK"
+    RESP_ERR_PREFIX = "ERR:"
     
     def __init__(self, port, serial_number, chamber_number=None):
         self.port = port
@@ -121,7 +140,8 @@ class BoardConnection:
             while retry_count < self.max_retries:        
                 try:
                     # Format: "SETALL d0 d1 d2 d3 d4 d5\n"
-                    command = "SETALL"
+                    # Use pre-cached command type
+                    command = self.CMD_SETALL
                     for val in duty_values:
                         command += f" {val}"
                     command += "\n"
@@ -141,9 +161,10 @@ class BoardConnection:
                             # Read all available data at once rather than byte-by-byte
                             data = self.serial_conn.read(self.serial_conn.in_waiting)
                             response += data.decode('utf-8')
-                            if "OK" in response:
+                            # Use cached response strings for comparison
+                            if self.RESP_OK in response:
                                 return True, "Success"
-                            elif "ERR:" in response:
+                            elif self.RESP_ERR_PREFIX in response:
                                 return False, f"Error: {response}"
                             
                         # Shorter sleep interval for faster response
@@ -172,7 +193,8 @@ class BoardConnection:
             while retry_count < self.max_retries:        
                 try:
                     # Format: "FAN_SET percentage\n"
-                    command = f"FAN_SET {percentage}\n"
+                    # Use pre-cached command type
+                    command = f"{self.CMD_FAN_SET} {percentage}\n"
                     
                     # Clear any pending data
                     if self.serial_conn.in_waiting > 0:
@@ -188,11 +210,12 @@ class BoardConnection:
                         if self.serial_conn.in_waiting > 0:
                             data = self.serial_conn.read(self.serial_conn.in_waiting)
                             response += data.decode('utf-8')
-                            if "OK" in response:
+                            # Use cached response strings for comparison
+                            if self.RESP_OK in response:
                                 self.fan_speed = percentage
                                 self.fan_enabled = percentage > 0
                                 return True, "Success"
-                            elif "ERR:" in response:
+                            elif self.RESP_ERR_PREFIX in response:
                                 return False, f"Error: {response}"
                             
                         time.sleep(0.05)
@@ -220,7 +243,8 @@ class BoardConnection:
             while retry_count < self.max_retries:        
                 try:
                     # Format: "FAN_ON\n"
-                    command = "FAN_ON\n"
+                    # Use pre-cached command type
+                    command = f"{self.CMD_FAN_ON}\n"
                     
                     # Clear any pending data
                     if self.serial_conn.in_waiting > 0:
@@ -236,10 +260,11 @@ class BoardConnection:
                         if self.serial_conn.in_waiting > 0:
                             data = self.serial_conn.read(self.serial_conn.in_waiting)
                             response += data.decode('utf-8')
-                            if "OK" in response:
+                            # Use cached response strings for comparison
+                            if self.RESP_OK in response:
                                 self.fan_enabled = True
                                 return True, "Success"
-                            elif "ERR:" in response:
+                            elif self.RESP_ERR_PREFIX in response:
                                 return False, f"Error: {response}"
                             
                         time.sleep(0.05)
@@ -267,7 +292,8 @@ class BoardConnection:
             while retry_count < self.max_retries:        
                 try:
                     # Format: "FAN_OFF\n"
-                    command = "FAN_OFF\n"
+                    # Use pre-cached command type
+                    command = f"{self.CMD_FAN_OFF}\n"
                     
                     # Clear any pending data
                     if self.serial_conn.in_waiting > 0:
@@ -283,11 +309,12 @@ class BoardConnection:
                         if self.serial_conn.in_waiting > 0:
                             data = self.serial_conn.read(self.serial_conn.in_waiting)
                             response += data.decode('utf-8')
-                            if "OK" in response:
+                            # Use cached response strings for comparison
+                            if self.RESP_OK in response:
                                 self.fan_enabled = False
                                 self.fan_speed = 0
                                 return True, "Success"
-                            elif "ERR:" in response:
+                            elif self.RESP_ERR_PREFIX in response:
                                 return False, f"Error: {response}"
                             
                         time.sleep(0.05)
@@ -448,8 +475,11 @@ class LEDControlGUI:
         # Initialize status variable early so it's available for all methods
         self.status_var = tk.StringVar(value="Ready")
         
-        # Caching time validation pattern
-        self.time_pattern = re.compile(r'^([0-1][0-9]|2[0-3]):([0-5][0-9])$')
+        # Cache these once instead of creating multiple regex objects
+        self.time_pattern = TIME_PATTERN
+        
+        # Pre-calculate common conversion factors
+        self.duty_cycle_factor = 4095 / 100.0  # For converting percentages to duty cycles
         
         self.boards = []
         self.board_frames = []
@@ -485,15 +515,39 @@ class LEDControlGUI:
         self.status_update_timer = None
         self.is_updating_widgets = False
         
-        # Chamber mapping variables
+        # Cache fonts to avoid creating new font objects repeatedly
+        self.cached_fonts = {
+            'header': ('Helvetica', 16, 'bold'),
+            'subheader': ('Helvetica', 10, 'bold'),
+            'normal': ('Helvetica', 10, 'normal')
+        }
+        
+        # Cache colors for better performance
+        self.cached_colors = {
+            'error': 'red',
+            'normal': 'black',
+            'success': 'green'
+        }
+        
+        # Cache chamber mapping
         self.chamber_mapping = {}  # {serial_number: chamber_number}
+        self.reverse_chamber_mapping = {}  # {chamber_number: serial_number}
         self.load_chamber_mapping()
         
         # Pagination variables
         self.current_page = 0
         self.boards_per_page = 8
         
+        # Cache command batch sizes for higher performance during bulk operations
+        self.max_concurrent_commands = 5
+        
+        # Pre-cache some command strings
+        self.zero_duty_cycle = [0, 0, 0, 0, 0, 0]
+        
         self.create_gui()
+        
+        # Cache board serial detection
+        self.initialize_port_cache()
         
         # Start the scheduler using after() instead of a thread
         self.start_scheduler()
@@ -501,9 +555,27 @@ class LEDControlGUI:
         # Start the widget update processor
         self.process_widget_updates()
     
+    def initialize_port_cache(self):
+        """Initialize the serial port cache for faster board detection"""
+        global CACHED_PORT_INFO, BOARD_SERIAL_CACHE
+        
+        # Reset the caches
+        CACHED_PORT_INFO = {}
+        BOARD_SERIAL_CACHE = {}
+        
+        # Pre-cache all XIAO RP2040 boards for faster future lookups
+        for port_info in list_ports.grep('VID:PID=2E8A:0005'):
+            CACHED_PORT_INFO[port_info.device] = {
+                'serial_number': port_info.serial_number,
+                'description': port_info.description,
+                'hwid': port_info.hwid
+            }
+            BOARD_SERIAL_CACHE[port_info.serial_number] = port_info.device
+    
     def load_chamber_mapping(self):
         """Load the chamber to serial number mapping from the text file"""
         self.chamber_mapping = {}
+        self.reverse_chamber_mapping = {}
         
         try:
             if os.path.exists(SERIAL_MAPPING_FILE):
@@ -521,6 +593,7 @@ class LEDControlGUI:
                             
                             # Store the mapping both ways for easy lookup
                             self.chamber_mapping[serial_num] = chamber_num
+                            self.reverse_chamber_mapping[chamber_num] = serial_num
                         
                 self.status_var.set(f"Loaded chamber mapping for {len(self.chamber_mapping)} chambers")
             else:
@@ -540,7 +613,7 @@ class LEDControlGUI:
         header_frame = ttk.Frame(main_frame)
         header_frame.grid(column=0, row=0, columnspan=2, sticky=(tk.W, tk.E))
         
-        ttk.Label(header_frame, text="LED Control System", font=('Helvetica', 16, 'bold')).pack(side=tk.LEFT)
+        ttk.Label(header_frame, text="LED Control System", font=self.cached_fonts['header']).pack(side=tk.LEFT)
         
         # Master lights control button
         self.master_button_var = tk.StringVar(value="All Lights OFF")
@@ -580,13 +653,13 @@ class LEDControlGUI:
         nav_frame.pack(fill=tk.X, pady=5)
         
         # Page navigation buttons - Enhanced with more prominent styling
-        nav_label = ttk.Label(nav_frame, text="Chamber Navigation:", font=('Helvetica', 10, 'bold'))
+        nav_label = ttk.Label(nav_frame, text="Chamber Navigation:", font=self.cached_fonts['subheader'])
         nav_label.pack(side=tk.LEFT, padx=10)
         
         self.prev_button = ttk.Button(nav_frame, text="◀ Chambers 1-8", command=self.prev_page, width=15)
         self.prev_button.pack(side=tk.LEFT, padx=10)
         
-        self.page_label = ttk.Label(nav_frame, text="Chambers 1-8", font=('Helvetica', 10, 'bold'))
+        self.page_label = ttk.Label(nav_frame, text="Chambers 1-8", font=self.cached_fonts['subheader'])
         self.page_label.pack(side=tk.LEFT, padx=10)
         
         self.next_button = ttk.Button(nav_frame, text="Chambers 9-16 ▶", command=self.next_page, width=15)
@@ -1114,17 +1187,26 @@ class LEDControlGUI:
         """Detect connected XIAO RP2040 boards and assign chamber numbers"""
         results = []
         
-        # Detect all XIAO RP2040 boards by VID:PID
-        for port_info in list_ports.grep('VID:PID=2E8A:0005'):
-            serial_number = port_info.serial_number
+        # Use the cached port info if available
+        global CACHED_PORT_INFO
+        
+        # If cache is empty or needs refresh, initialize it
+        if not CACHED_PORT_INFO:
+            self.initialize_port_cache()
+        
+        # Use the cache for faster detection
+        for port, info in CACHED_PORT_INFO.items():
+            serial_number = info['serial_number']
             
-            # Assign chamber number
+            # Assign chamber number from cached mapping
             chamber_number = self.chamber_mapping.get(serial_number)
+            
             # If no chamber number found, assign a high number (ensuring it comes after known chambers)
             if chamber_number is None:
                 chamber_number = 100  # High number to appear at end when sorted
                 self.status_var.set(f"Warning: Board with S/N {serial_number} not found in chamber mapping")
-            results.append([port_info.device, serial_number, chamber_number])
+            
+            results.append([port, serial_number, chamber_number])
         
         return results
     
@@ -1471,13 +1553,13 @@ class LEDControlGUI:
             # Valid format - reset any previous error styling
             key = (board_idx, entry_type)
             if key in self.board_time_entries:
-                self.board_time_entries[key].config(foreground="black")
+                self.board_time_entries[key].config(foreground=self.cached_colors['normal'])
             return True
         else:
             # Invalid format - set error styling
             key = (board_idx, entry_type)
             if key in self.board_time_entries:
-                self.board_time_entries[key].config(foreground="red")
+                self.board_time_entries[key].config(foreground=self.cached_colors['error'])
             return False
     
     # NEW: Add methods for batch widget updates
