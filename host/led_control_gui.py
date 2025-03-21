@@ -35,6 +35,9 @@ LED_COLORS = {
 SERIAL_MAPPING_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
                                   "microcontroller", "microcontroller_serial.txt")
 
+# Default path for saving/loading settings (user's Documents folder)
+DEFAULT_DOCUMENTS_PATH = os.path.join(os.path.expanduser("~"), "Documents")
+
 # Cache commonly used regular expression patterns
 TIME_PATTERN = re.compile(r'^([0-1][0-9]|2[0-3]):([0-5][0-9])$')
 
@@ -1371,8 +1374,9 @@ class LEDControlGUI:
                 # Use chamber number as the key instead of board index
                 settings[f"chamber_{chamber_number}"] = board_settings
             
-            # Get file path from user
+            # Get file path from user - now using Documents folder as default
             file_path = filedialog.asksaveasfilename(
+                initialdir=DEFAULT_DOCUMENTS_PATH,
                 defaultextension=".json",
                 filetypes=[("JSON files", "*.json"), ("Text files", "*.txt"), ("All files", "*.*")],
                 title="Save LED Settings"
@@ -1394,8 +1398,9 @@ class LEDControlGUI:
     def import_settings(self):
         """Import LED settings and schedules from a text file and apply them"""
         try:
-            # Get file path from user
+            # Get file path from user - now using Documents folder as default
             file_path = filedialog.askopenfilename(
+                initialdir=DEFAULT_DOCUMENTS_PATH,
                 filetypes=[("JSON files", "*.json"), ("Text files", "*.txt"), ("All files", "*.*")],
                 title="Import LED Settings"
             )
