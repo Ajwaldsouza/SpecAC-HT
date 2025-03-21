@@ -874,11 +874,16 @@ class LEDControlGUI:
         self.boards_container = ttk.Frame(boards_frame)
         self.boards_container.pack(expand=True, fill=tk.BOTH, padx=10, pady=10)
         
-        # Configure grid for boards_container - ensure columns and rows can expand
-        for i in range(4):  # 4 columns
-            self.boards_container.columnconfigure(i, weight=1, uniform="column")
-        for i in range(2):  # 2 rows
-            self.boards_container.rowconfigure(i, weight=1, uniform="row")
+        # Create persistent page containers - major optimization
+        for i in range(2):  # Create containers for both pages
+            page_container = ttk.Frame(self.boards_container)
+            self.page_containers[i] = page_container
+            
+            # Configure grid for each page container
+            for col in range(4):  # 4 columns
+                page_container.columnconfigure(col, weight=1, uniform=f"col_{i}")
+            for row in range(2):  # 2 rows
+                page_container.rowconfigure(row, weight=1, uniform=f"row_{i}")
         
         # Fan control frame (new)
         fan_frame = ttk.LabelFrame(main_frame, text="Fan Controls")
@@ -948,29 +953,51 @@ class LEDControlGUI:
         # Clean up board connections
         for board in self.boards:
             board.cleanup()
+            
+        # Clean up all Tkinter widgets explicitly
+        self.cleanup_widgets()
         
         # Destroy the main window
         self.root.destroy()
     
+    def cleanup_widgets(self):
+        """Explicitly clean up widgets to prevent memory leaks"""
+        # Clean up all page containers
+        for container in self.page_containers:
+            if container:
+                for widget in container.winfo_children():
+                    widget.destroy()
+        
+        # Clean up all board frames references
+        self.board_frames.clear()
+        
+        # Clean up all entry references
+        self.led_entries.clear()
+        self.board_time_entries.clear()
+        
+        # Clean up all variable references
+        self.board_schedule_vars.clear()
+    
     def next_page(self):
-        """Navigate to chambers 9-16 (page 2)"""
+        """Navigate to chambers 9-16 (page 2) - Optimized to toggle container visibility"""
         if self.current_page == 0:
             self.current_page = 1
             self.update_page_display()
     
     def prev_page(self):
-        """Navigate to chambers 1-8 (page 1)"""
+        """Navigate to chambers 1-8 (page 1) - Optimized to toggle container visibility"""
         if self.current_page == 1:
             self.current_page = 0
             self.update_page_display()
     
     def update_page_display(self):
-        """Update the display to show chambers 1-8 or 9-16 based on current page"""
-        # Hide all board frames first
-        for frame in self.board_frames:
-            frame.grid_remove()
+        """Update the display to show chambers 1-8 or 9-16 - Optimized to toggle containers"""
+        # Hide all page containers
+        for container in self.page_containers:
+            if container:
+                container.pack_forget()
         
-        # NEW: More efficient counting using dictionary comprehension and sum
+        # More efficient counting using dictionary comprehension and sum
         boards_1_8 = sum(1 for chamber in self.chamber_to_board_idx if 1 <= chamber <= 8)
         boards_9_16 = sum(1 for chamber in self.chamber_to_board_idx if 9 <= chamber <= 16)
         
@@ -981,42 +1008,39 @@ class LEDControlGUI:
             self.next_button.config(state=tk.NORMAL if boards_9_16 > 0 else tk.DISABLED)
             first_chamber = 1
             last_chamber = 8
+            displayed_count = boards_1_8
         else:  # page 1
             self.page_label.config(text="Chambers 9-16")
             self.prev_button.config(state=tk.NORMAL)
             self.next_button.config(state=tk.DISABLED)
             first_chamber = 9
             last_chamber = 16
+            displayed_count = boards_9_16
         
-        # NEW: More efficient display of boards using chamber-to-board mapping
-        displayed_count = 0
-        for chamber_number in range(first_chamber, last_chamber + 1):
-            if chamber_number in self.chamber_to_board_idx:
-                board_idx = self.chamber_to_board_idx[chamber_number]
-                
-                # Calculate position within the page (2 rows x 4 columns)
-                relative_position = chamber_number - first_chamber
-                row = relative_position // 4
-                col = relative_position % 4
-                
-                if board_idx < len(self.board_frames):
-                    self.board_frames[board_idx].grid(row=row, column=col, padx=5, pady=5, sticky=(tk.N, tk.W, tk.E, tk.S))
-                    displayed_count += 1
+        # Show the appropriate page container
+        if self.page_containers[self.current_page]:
+            self.page_containers[self.current_page].pack(expand=True, fill=tk.BOTH)
         
-        # Update status message to show how many chambers are displayed
+        # Update status message - no need to recalculate displayed board count
         self.status_var.set(f"Displaying {displayed_count} chambers (Chambers {first_chamber}-{last_chamber})")
     
     def create_board_frames(self):
-        """Create frames for each detected board, sorted by chamber number"""
-        # Remove old frames
+        """Create frames for each detected board, sorted by chamber number - Optimized"""
+        # Remove old frames and clean up
         for frame in self.board_frames:
             frame.destroy()
         self.board_frames = []
         self.led_entries = {}
         
-        # NEW: Reset board lookup dictionaries
+        # Reset board lookup dictionaries
         self.chamber_to_board_idx = {}
         self.serial_to_board_idx = {}
+        
+        # Clear containers but preserve them
+        for container in self.page_containers:
+            if container:
+                for widget in container.winfo_children():
+                    widget.destroy()
         
         # Sort boards by chamber number
         self.boards.sort(key=lambda b: b.chamber_number)
@@ -1025,12 +1049,25 @@ class LEDControlGUI:
             chamber_number = board.chamber_number
             serial_number = board.serial_number
             
-            # NEW: Add chamber and serial number to lookup dictionaries
+            # Add chamber and serial number to lookup dictionaries
             self.chamber_to_board_idx[chamber_number] = i
             self.serial_to_board_idx[serial_number] = i
             
-            frame = ttk.LabelFrame(self.boards_container, text=f"Chamber {chamber_number}")
+            # Determine which page container to use based on chamber number
+            page_idx = 0 if 1 <= chamber_number <= 8 else 1
+            parent_container = self.page_containers[page_idx]
+            
+            # Create the board frame inside the appropriate page container
+            frame = ttk.LabelFrame(parent_container, text=f"Chamber {chamber_number}")
             self.board_frames.append(frame)
+            
+            # Calculate position within the page container (2 rows x 4 columns)
+            relative_position = (chamber_number - 1) % 8  # Position within its page (0-7)
+            row = relative_position // 4
+            col = relative_position % 4
+            
+            # Place the frame in its container using grid
+            frame.grid(row=row, column=col, padx=5, pady=5, sticky=(tk.N, tk.W, tk.E, tk.S))
             
             # LED control section
             led_control_frame = ttk.Frame(frame)
@@ -1331,17 +1368,15 @@ class LEDControlGUI:
             current_time = time.time()
             
             # If we've updated within the last second, defer this update
-            if current_time - last_update < 1.0:ns soon
-                return_time - last_update < 1.0:
+            if current_time - last_update < 1.0:
                 self.root.after(1000, lambda: self.apply_changed_boards(True))
+        
         # NEW: Convert set to list once to avoid copying during iteration
         boards_to_update = list(self.changed_boards)
-        # NEW: Convert set to list once to avoid copying during iteration
+        
         # Update at most 3 boards at once to avoid GUI freezing
-        max_updates = 3g changes to boards: {boards_to_update}")  # Debug logging
-        if len(boards_to_update) > max_updates:
-            # Process some boards now, defer the restI freezing
-            current_batch = boards_to_update[:max_updates]
+        max_updates = 3
+        
         if len(boards_to_update) > max_updates:
             # Process some boards now, defer the rest
             current_batch = boards_to_update[:max_updates]
