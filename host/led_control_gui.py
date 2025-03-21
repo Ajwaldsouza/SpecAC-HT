@@ -2262,7 +2262,149 @@ class LEDControlGUI:
         
         # Otherwise calculate (should not happen with valid input)
         return int((percentage / 100.0) * 4095)
+    
+    def handle_prev_page(self):
+        """Centralized handler for previous page button"""
+        if self.current_page == 1:
+            self.current_page = 0
+            self.update_page_display()
+    
+    def handle_next_page(self):
+        """Centralized handler for next page button"""
+        if self.current_page == 0:
+            self.current_page = 1
+            self.update_page_display()
+    
+    # Fix: We need to keep these methods as they're still called by other parts of the code
+    def prev_page(self):
+        """Navigate to chambers 1-8 (page 1)"""
+        self.handle_prev_page()
+    
+    def next_page(self):
+        """Navigate to chambers 9-16 (page 2)"""
+        self.handle_next_page()
+    
+    # This section must not be removed as it's referenced elsewhere
+    def queue_widget_update(self, widget_id, update_type, value):
+        """Queue a widget update to be processed in batches"""
+        self.widget_update_queue.put((widget_id, update_type, value))
+        
+        # Ensure the processor is running
+        if not self.update_batch_timer:
+            self.process_widget_updates()
+    
+    def process_widget_updates(self):
+        """Process queued widget updates in batches"""
+        if self.is_updating_widgets:
+            # Already processing updates, just reschedule
+            self.update_batch_timer = self.root.after(
+                self.update_batch_interval, self.process_widget_updates)
+            return
+            
+        self.is_updating_widgets = True
+        
+        # Create a dictionary to store only the latest update for each widget
+        updates_by_widget = {}
+        update_count = 0
+        
+        # Process all queued updates
+        try:
+            while not self.widget_update_queue.empty() and update_count < 50:  # Limit updates per batch
+                widget_id, update_type, value = self.widget_update_queue.get_nowait()
+                # Only keep the most recent update for each widget
+                updates_by_widget[(widget_id, update_type)] = value
+                update_count += 1
+        except queue.Empty:
+            pass
+        
+        # Apply the batched updates
+        for (widget_id, update_type), value in updates_by_widget.items():
+            try:
+                if update_type == "text":
+                    # Update text in an entry
+                    widget = self.led_entries.get(widget_id)
+                    if widget:
+                        current = widget.get()
+                        if current != value:
+                            widget.delete(0, tk.END)
+                            widget.insert(0, value)
+                elif update_type == "color":
+                    # Update foreground color - use cached colors
+                    widget = self.board_time_entries.get(widget_id)
+                    if widget:
+                        widget.config(foreground=self.cached_colors.get(value, value))
+                elif update_type == "check":
+                    # Update checkbox state
+                    var = self.board_schedule_vars.get(widget_id)
+                    if var and var.get() != value:
+                        var.set(value)
+                elif update_type == "enable":
+                    # Enable/disable a widget
+                    widget = self.board_frames[widget_id] if widget_id < len(self.board_frames) else None
+                    if widget:
+                        widget.config(state=value)
+                elif update_type == "background":
+                    # Update background color
+                    widget = None
+                    if isinstance(widget_id, tuple) and widget_id[0] == "board":
+                        board_idx = widget_id[1]
+                        if board_idx < len(self.board_frames):
+                            widget = self.board_frames[board_idx]
+                    if widget:
+                        widget.config(background=self.cached_colors.get(value, value))
+            except Exception as e:
+                print(f"Error updating widget {widget_id}: {str(e)}")
+        
+        self.is_updating_widgets = False
+        
+        # Schedule the next batch processing
+        self.update_batch_timer = self.root.after(
+            self.update_batch_interval, self.process_widget_updates)
+    
+    def set_status(self, message):
+        """Batch status updates to reduce status bar redraws"""
+        if not hasattr(self, 'status_update_batch'):
+            self.status_update_batch = []
+            
+        # Add the message to the batch
+        self.status_update_batch.append(message)
+        
+        # If there's already a pending update, let it handle this message
+        if self.status_update_timer:
+            return
+            
+        # Schedule the status update
+        self.status_update_timer = self.root.after(
+            self.timings['status_update_batch'], self.process_status_updates)
+    
+    def process_status_updates(self):
+        """Process batched status updates"""
+        self.status_update_timer = None
+        
+        if not self.status_update_batch:
+            return
+            
+        # Use the most recent status message for efficiency
+        latest_message = self.status_update_batch[-1]
+        self.status_var.set(latest_message)
+        
+        # Clear the batch
+        self.status_update_batch = []
 
+    # This section must not be removed as it's referenced elsewhere
+    def validate_time_entry(self, board_idx, entry_type, new_value):
+        """
+        Validate time entry and provide feedback
+        Still needed for backward compatibility
+        """
+        return self.handle_time_entry_change(board_idx, entry_type, new_value)
+    
+    def update_board_schedule(self, board_idx):
+        """
+        Update the schedule for a specific board
+        Still needed for backward compatibility
+        """
+        self.handle_schedule_toggle(board_idx)
 
 if __name__ == "__main__":
     root = tk.Tk()
