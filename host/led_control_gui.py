@@ -52,6 +52,11 @@ class BoardConnection:
         self.lock = threading.RLock()
         self.executor = ThreadPoolExecutor(max_workers=1)
         self.pending_tasks = []
+        self.command_queue = queue.Queue()  # Queue for batching commands
+        self.command_processor_running = False
+        self.command_processor_thread = None
+        self.last_command_time = 0
+        self.command_batch_timeout = 0.1  # seconds to batch commands
         
     def connect(self, callback=None):
         """Establish serial connection to the board asynchronously"""
@@ -105,14 +110,6 @@ class BoardConnection:
                     self.is_connected = False
             return True
     
-    def send_command(self, duty_values, callback=None):
-        """Send command to update LED brightness asynchronously"""
-        future = self.executor.submit(self._send_command_impl, duty_values)
-        if callback:
-            future.add_done_callback(lambda f: callback(*f.result()))
-        self.pending_tasks.append(future)
-        return future
-    
     def _send_command_impl(self, duty_values):
         """Internal implementation of send_command operation"""
         with self.lock:
@@ -129,24 +126,28 @@ class BoardConnection:
                         command += f" {val}"
                     command += "\n"
                     
-                    # Clear any pending data
+                    # Clear any pending data only once before sending - reduce I/O operations
                     if self.serial_conn.in_waiting > 0:
                         self.serial_conn.reset_input_buffer()
                     
+                    # Send command in a single write operation
                     self.serial_conn.write(command.encode('utf-8'))
                     
-                    # Wait for response with timeout
+                    # More efficient response reading with timeout
                     start_time = time.time()
+                    response = ""
                     while time.time() - start_time < 1.0:  # 1 second timeout
                         if self.serial_conn.in_waiting > 0:
-                            response = self.serial_conn.readline().decode('utf-8').strip()
-                            if response == "OK":
+                            # Read all available data at once rather than byte-by-byte
+                            data = self.serial_conn.read(self.serial_conn.in_waiting)
+                            response += data.decode('utf-8')
+                            if "OK" in response:
                                 return True, "Success"
-                            elif response.startswith("ERR:"):
+                            elif "ERR:" in response:
                                 return False, f"Error: {response}"
-                            else:
-                                return False, f"Unexpected response: {response}"
-                        time.sleep(0.1)
+                            
+                        # Shorter sleep interval for faster response
+                        time.sleep(0.05)
                     
                     retry_count += 1
                     if retry_count < self.max_retries:
@@ -159,164 +160,118 @@ class BoardConnection:
                     return False, str(e)
             
             return False, "Max retries exceeded"
+    
+    def start_command_processor(self):
+        """Start the background command processor thread"""
+        if not self.command_processor_running:
+            self.command_processor_running = True
+            self.command_processor_thread = threading.Thread(
+                target=self._process_command_queue,
+                daemon=True
+            )
+            self.command_processor_thread.start()
+    
+    def _process_command_queue(self):
+        """Process and batch commands in background thread"""
+        while self.command_processor_running:
+            try:
+                # Wait for a command or timeout
+                try:
+                    cmd, args, callback = self.command_queue.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+                
+                # Check if we should wait for more commands to batch
+                batch_commands = []
+                batch_callbacks = []
+                
+                # Add the first command
+                batch_commands.append((cmd, args))
+                batch_callbacks.append(callback)
+                
+                # Try to batch multiple commands of the same type
+                start_time = time.time()
+                while time.time() - start_time < self.command_batch_timeout:
+                    try:
+                        next_cmd, next_args, next_callback = self.command_queue.get_nowait()
+                        # Only batch same command types
+                        if next_cmd == cmd:
+                            # For most recent LED command, only keep the latest
+                            if cmd == "SETALL" and batch_commands:
+                                batch_commands.pop()
+                                batch_callbacks.pop()
+                            batch_commands.append((next_cmd, next_args))
+                            batch_callbacks.append(next_callback)
+                        else:
+                            # Put back different command types for next batch
+                            self.command_queue.put((next_cmd, next_args, next_callback))
+                            break
+                    except queue.Empty:
+                        break
+                
+                # Process the batched commands
+                for i, (cmd, args) in enumerate(batch_commands):
+                    if cmd == "SETALL":
+                        success, message = self._send_command_impl(args)
+                    elif cmd == "FAN_SET":
+                        success, message = self._set_fan_speed_impl(args)
+                    elif cmd == "FAN_ON":
+                        success, message = self._turn_fan_on_impl()
+                    elif cmd == "FAN_OFF":
+                        success, message = self._turn_fan_off_impl()
+                    
+                    # Call the callback if provided
+                    callback = batch_callbacks[i]
+                    if callback:
+                        callback(success, message)
+                    
+                    # Mark task as done
+                    self.command_queue.task_done()
+            
+            except Exception as e:
+                # Log error but continue processing
+                print(f"Command processor error: {str(e)}")
+                time.sleep(0.1)
+    
+    def send_command(self, duty_values, callback=None):
+        """Send command to update LED brightness asynchronously"""
+        # Ensure command processor is running
+        if not self.command_processor_running:
+            self.start_command_processor()
+        
+        # Queue the command instead of executing directly
+        self.command_queue.put(("SETALL", duty_values, callback))
+        return True
     
     def set_fan_speed(self, percentage, callback=None):
         """Set the fan speed as a percentage asynchronously"""
-        future = self.executor.submit(self._set_fan_speed_impl, percentage)
-        if callback:
-            future.add_done_callback(lambda f: callback(*f.result()))
-        self.pending_tasks.append(future)
-        return future
+        # Ensure command processor is running
+        if not self.command_processor_running:
+            self.start_command_processor()
+        
+        # Queue the command instead of executing directly
+        self.command_queue.put(("FAN_SET", percentage, callback))
+        return True
     
-    def _set_fan_speed_impl(self, percentage):
-        """Internal implementation of set_fan_speed operation"""
-        with self.lock:
-            if not self.is_connected:
-                if not self._connect_impl():
-                    return False, self.last_error
-                    
-            retry_count = 0
-            while retry_count < self.max_retries:
-                try:
-                    command = f"FAN_SET {percentage}\n"
-                    
-                    # Clear any pending data
-                    if self.serial_conn.in_waiting > 0:
-                        self.serial_conn.reset_input_buffer()
-                    
-                    self.serial_conn.write(command.encode('utf-8'))
-                    
-                    # Wait for response with timeout
-                    start_time = time.time()
-                    while time.time() - start_time < 1.0:  # 1 second timeout
-                        if self.serial_conn.in_waiting > 0:
-                            response = self.serial_conn.readline().decode('utf-8').strip()
-                            if response == "OK":
-                                self.fan_speed = percentage
-                                self.fan_enabled = percentage > 0
-                                return True, "Success"
-                            elif response.startswith("ERR:"):
-                                return False, f"Error: {response}"
-                            else:
-                                return False, f"Unexpected response: {response}"
-                        time.sleep(0.1)
-                    
-                    retry_count += 1
-                    if retry_count < self.max_retries:
-                        time.sleep(0.5)  # Wait before retry
-                    else:
-                        return False, "Timeout waiting for response"
-                        
-                except Exception as e:
-                    self.is_connected = False
-                    return False, str(e)
-            
-            return False, "Max retries exceeded"
-            
     def turn_fan_on(self, callback=None):
         """Turn the fan on asynchronously"""
-        future = self.executor.submit(self._turn_fan_on_impl)
-        if callback:
-            future.add_done_callback(lambda f: callback(*f.result()))
-        self.pending_tasks.append(future)
-        return future
+        # Ensure command processor is running
+        if not self.command_processor_running:
+            self.start_command_processor()
+        
+        # Queue the command instead of executing directly
+        self.command_queue.put(("FAN_ON", None, callback))
+        return True
     
-    def _turn_fan_on_impl(self):
-        """Internal implementation of turn_fan_on operation"""
-        with self.lock:
-            if not self.is_connected:
-                if not self._connect_impl():
-                    return False, self.last_error
-            
-            retry_count = 0
-            while retry_count < self.max_retries:
-                try:
-                    command = "FAN_ON\n"
-                    
-                    # Clear any pending data
-                    if self.serial_conn.in_waiting > 0:
-                        self.serial_conn.reset_input_buffer()
-                    
-                    self.serial_conn.write(command.encode('utf-8'))
-                    
-                    # Wait for response with timeout
-                    start_time = time.time()
-                    while time.time() - start_time < 1.0:  # 1 second timeout
-                        if self.serial_conn.in_waiting > 0:
-                            response = self.serial_conn.readline().decode('utf-8').strip()
-                            if response == "OK":
-                                self.fan_enabled = True
-                                return True, "Success"
-                            elif response.startswith("ERR:"):
-                                return False, f"Error: {response}"
-                            else:
-                                return False, f"Unexpected response: {response}"
-                        time.sleep(0.1)
-                    
-                    retry_count += 1
-                    if retry_count < self.max_retries:
-                        time.sleep(0.5)  # Wait before retry
-                    else:
-                        return False, "Timeout waiting for response"
-                        
-                except Exception as e:
-                    self.is_connected = False
-                    return False, str(e)
-            
-            return False, "Max retries exceeded"
-            
     def turn_fan_off(self, callback=None):
         """Turn the fan off asynchronously"""
-        future = self.executor.submit(self._turn_fan_off_impl)
-        if callback:
-            future.add_done_callback(lambda f: callback(*f.result()))
-        self.pending_tasks.append(future)
-        return future
-    
-    def _turn_fan_off_impl(self):
-        """Internal implementation of turn_fan_off operation"""
-        with self.lock:
-            if not self.is_connected:
-                if not self._connect_impl():
-                    return False, self.last_error
-                    
-            retry_count = 0
-            while retry_count < self.max_retries:
-                try:
-                    command = "FAN_OFF\n"
-                    
-                    # Clear any pending data
-                    if self.serial_conn.in_waiting > 0:
-                        self.serial_conn.reset_input_buffer()
-                    
-                    self.serial_conn.write(command.encode('utf-8'))
-                    
-                    # Wait for response with timeout
-                    start_time = time.time()
-                    while time.time() - start_time < 1.0:  # 1 second timeout
-                        if self.serial_conn.in_waiting > 0:
-                            response = self.serial_conn.readline().decode('utf-8').strip()
-                            if response == "OK":
-                                self.fan_enabled = False
-                                self.fan_speed = 0
-                                return True, "Success"
-                            elif response.startswith("ERR:"):
-                                return False, f"Error: {response}"
-                            else:
-                                return False, f"Unexpected response: {response}"
-                        time.sleep(0.1)
-                    
-                    retry_count += 1
-                    if retry_count < self.max_retries:
-                        time.sleep(0.5)  # Wait before retry
-                    else:
-                        return False, "Timeout waiting for response"
-                        
-                except Exception as e:
-                    self.is_connected = False
-                    return False, str(e)
-            
-            return False, "Max retries exceeded"
+        # Ensure command processor is running
+        if not self.command_processor_running:
+            self.start_command_processor()
+        
+        # Queue the command instead of executing directly
+        self.command_queue.put(("FAN_OFF", None, callback))
+        return True
     
     def cleanup(self):
         """Clean up resources when shutting down"""
@@ -350,6 +305,9 @@ class LEDControlGUI:
         # Initialize status variable early so it's available for all methods
         self.status_var = tk.StringVar(value="Ready")
         
+        # Caching time validation pattern
+        self.time_pattern = re.compile(r'^([0-1][0-9]|2[0-3]):([0-5][0-9])$')
+        
         self.boards = []
         self.board_frames = []
         self.led_entries = {}  # {(board_idx, channel): entry_widget}
@@ -367,6 +325,7 @@ class LEDControlGUI:
         self.board_schedule_vars = {}  # {board_idx: BooleanVar}
         self.scheduler_running = False
         self.scheduler_thread = None
+        self.changed_boards = set()  # Track which boards changed
         
         # Chamber mapping variables
         self.chamber_mapping = {}  # {serial_number: chamber_number}
@@ -533,11 +492,11 @@ class LEDControlGUI:
         self.scheduler_running = False
         if self.scheduler_thread and self.scheduler_thread.is_alive():
             self.scheduler_thread.join(timeout=1.0)
-            
+        
         # Clean up board connections
         for board in self.boards:
             board.cleanup()
-            
+        
         # Destroy the main window
         self.root.destroy()
     
@@ -626,10 +585,10 @@ class LEDControlGUI:
                 
                 value_var = tk.StringVar(value="0")
                 entry = ttk.Spinbox(
-                    led_control_frame, 
-                    from_=0, 
-                    to=100, 
-                    width=5, 
+                    led_control_frame,
+                    from_=0,
+                    to=100,
+                    width=5,
                     textvariable=value_var,
                     validate='key',
                     validatecommand=(self.root.register(self.validate_percentage), '%P')
@@ -668,7 +627,7 @@ class LEDControlGUI:
             # Schedule enable checkbox
             schedule_var = tk.BooleanVar(value=False)
             schedule_check = ttk.Checkbutton(
-                schedule_frame, 
+                schedule_frame,
                 text="Enable Scheduling",
                 variable=schedule_var,
                 command=lambda b_idx=i: self.update_board_schedule(b_idx)
@@ -680,14 +639,14 @@ class LEDControlGUI:
             self.board_schedules[i] = {
                 "on_time": "08:00",
                 "off_time": "20:00",
-                "enabled": False,   
+                "enabled": False,
                 "saved_values": {},
                 "active": True  # Add active flag, default to True
             }
             
             # Individual apply button
             ttk.Button(
-                frame, 
+                frame,
                 text="Apply", 
                 command=lambda b_idx=i: self.apply_board_settings(b_idx)
             ).grid(column=0, row=2, pady=10, sticky=(tk.W, tk.E))
@@ -771,17 +730,22 @@ class LEDControlGUI:
     def is_time_between(self, current_time, start_time, end_time):
         """Check if current time is between start and end times, handling overnight periods"""
         try:
-            # Convert all times to datetime for comparison
-            current = datetime.strptime(current_time, "%H:%M")
-            start = datetime.strptime(start_time, "%H:%M")
-            end = datetime.strptime(end_time, "%H:%M")
+            # More efficient time comparison without datetime objects
+            # Convert times to minutes since midnight
+            h1, m1 = map(int, current_time.split(':'))
+            h2, m2 = map(int, start_time.split(':'))
+            h3, m3 = map(int, end_time.split(':'))
             
-            if start <= end:
+            current_mins = h1 * 60 + m1
+            start_mins = h2 * 60 + m2
+            end_mins = h3 * 60 + m3
+            
+            if start_mins <= end_mins:
                 # Simple case: start time is before end time (e.g., 08:00 to 20:00)
-                return start <= current <= end
+                return start_mins <= current_mins <= end_mins
             else:
                 # Wrap-around case: end time is before start time (e.g., 20:00 to 08:00 next day)
-                return current >= start or current <= end
+                return current_mins >= start_mins or current_mins <= end_mins
         except ValueError:
             # If any time format is invalid, default to True (safer)
             return True
@@ -841,7 +805,6 @@ class LEDControlGUI:
             return
         
         chamber_number = self.boards[board_idx].chamber_number
-        
         if success:
             if extra_info:
                 self.status_var.set(f"Chamber {chamber_number}: Settings applied ({extra_info})")
@@ -907,7 +870,7 @@ class LEDControlGUI:
         """Send zeros to the board without changing UI values"""
         if board_idx >= len(self.boards):
             return False
-            
+        
         board = self.boards[board_idx]
         # Send command with all zeros directly (non-blocking now)
         board.send_command([0, 0, 0, 0, 0, 0])
@@ -918,15 +881,24 @@ class LEDControlGUI:
         # Track the last activation time for each board
         last_activation = {}  # {board_idx: {"on": datetime, "off": datetime}}
         
+        # Cache for parsed time values to avoid repeated parsing
+        time_cache = {}  # {board_idx: {"on_parsed": (hour, minute), "off_parsed": (hour, minute)}}
+        
+        # Adaptive sleep time - check more frequently near scheduled times
+        base_sleep_time = 10  # seconds
+        
         while True:
             if not self.scheduler_running:
                 time.sleep(1)
                 continue
             
             current_datetime = datetime.now()
+            current_hour, current_minute = current_datetime.hour, current_datetime.minute
             changes_made = False
+            min_time_diff = float('inf')  # Track time to next scheduled event
             
-            for board_idx, schedule_info in self.board_schedules.items():
+            # Process each board with a schedule
+            for board_idx, schedule_info in list(self.board_schedules.items()):
                 if not schedule_info.get("enabled", False):
                     continue
                     
@@ -934,51 +906,115 @@ class LEDControlGUI:
                 if board_idx not in last_activation:
                     last_activation[board_idx] = {"on": None, "off": None}
                 
-                # Parse on_time and off_time
+                # Parse on_time and off_time (use cached values if available)
                 on_time = schedule_info.get("on_time", "")
                 off_time = schedule_info.get("off_time", "")
                 
-                try:
-                    on_hour, on_minute = map(int, on_time.split(':'))
-                    off_hour, off_minute = map(int, off_time.split(':'))
-                    
-                    # Create datetime objects for today's scheduled times
-                    today = current_datetime.date()
-                    on_datetime = datetime(today.year, today.month, today.day, on_hour, on_minute)
-                    off_datetime = datetime(today.year, today.month, today.day, off_hour, off_minute)
-                    
-                    # Calculate time differences in minutes
-                    on_diff_minutes = abs((current_datetime - on_datetime).total_seconds()) / 60
-                    off_diff_minutes = abs((current_datetime - off_datetime).total_seconds()) / 60
-                    
-                    # Check if we're within the activation window for ON time (1 minute) and not recently activated
-                    if on_diff_minutes <= 1 and (last_activation[board_idx]["on"] is None or 
-                                              (current_datetime - last_activation[board_idx]["on"]).total_seconds() > 120):
+                # Update cached time values if schedule times changed
+                if board_idx not in time_cache or time_cache[board_idx].get("on_time") != on_time:
+                    match = self.time_pattern.match(on_time)
+                    if match:
+                        on_hour, on_minute = int(match.group(1)), int(match.group(2))
+                        if board_idx not in time_cache:
+                            time_cache[board_idx] = {}
+                        time_cache[board_idx]["on_parsed"] = (on_hour, on_minute)
+                        time_cache[board_idx]["on_time"] = on_time
+                
+                if board_idx not in time_cache or time_cache[board_idx].get("off_time") != off_time:
+                    match = self.time_pattern.match(off_time)
+                    if match:
+                        off_hour, off_minute = int(match.group(1)), int(match.group(2))
+                        if board_idx not in time_cache:
+                            time_cache[board_idx] = {}
+                        time_cache[board_idx]["off_parsed"] = (off_hour, off_minute)
+                        time_cache[board_idx]["off_time"] = off_time
+                
+                # Skip if time values aren't cached (invalid format)
+                if board_idx not in time_cache or "on_parsed" not in time_cache[board_idx] or "off_parsed" not in time_cache[board_idx]:
+                    continue
+                
+                on_hour, on_minute = time_cache[board_idx]["on_parsed"]
+                off_hour, off_minute = time_cache[board_idx]["off_parsed"]
+                
+                # Calculate time differences more efficiently using minutes since midnight
+                current_minutes = current_hour * 60 + current_minute
+                on_minutes = on_hour * 60 + on_minute
+                off_minutes = off_hour * 60 + off_minute
+                
+                # Calculate minutes until next on/off event (handling day wraparound)
+                mins_until_on = (on_minutes - current_minutes) % (24 * 60)
+                mins_until_off = (off_minutes - current_minutes) % (24 * 60)
+                
+                # Update minimum time difference for adaptive sleep
+                min_time_diff = min(min_time_diff, mins_until_on, mins_until_off)
+                
+                # Check if we're within 1 minute of the on_time
+                if mins_until_on <= 1 or mins_until_on >= (24 * 60 - 1):
+                    # Check if we haven't triggered this recently
+                    if last_activation[board_idx]["on"] is None or \
+                       (current_datetime - last_activation[board_idx]["on"]).total_seconds() > 120:
                         if not schedule_info.get("active", True):  # Only change if currently inactive
-                            # Time to turn on LEDs - just set active flag and apply
+                            # Time to turn on LEDs
                             schedule_info["active"] = True
                             changes_made = True
-                            self.status_var.set(f"Board {board_idx+1}: Schedule activated - turning ON")
+                            # Use board's chamber number instead of index for more meaningful logs
+                            chamber_number = self.boards[board_idx].chamber_number if board_idx < len(self.boards) else board_idx+1
+                            self.status_var.set(f"Chamber {chamber_number}: Schedule activated - turning ON")
                             last_activation[board_idx]["on"] = current_datetime
-                    
-                    # Check if we're within the activation window for OFF time (1 minute) and not recently activated
-                    if off_diff_minutes <= 1 and (last_activation[board_idx]["off"] is None or 
-                                               (current_datetime - last_activation[board_idx]["off"]).total_seconds() > 120):
+                            self.changed_boards.add(board_idx)
+                
+                # Check if we're within 1 minute of the off_time
+                if mins_until_off <= 1 or mins_until_off >= (24 * 60 - 1):
+                    # Check if we haven't triggered this recently
+                    if last_activation[board_idx]["off"] is None or \
+                       (current_datetime - last_activation[board_idx]["off"]).total_seconds() > 120:
                         if schedule_info.get("active", True):  # Only change if currently active
-                            # Time to turn off LEDs - just set active flag, UI values are preserved
+                            # Time to turn off LEDs
                             schedule_info["active"] = False
                             changes_made = True
-                            self.status_var.set(f"Board {board_idx+1}: Schedule activated - turning OFF (settings preserved)")
+                            # Use board's chamber number instead of index for more meaningful logs
+                            chamber_number = self.boards[board_idx].chamber_number if board_idx < len(self.boards) else board_idx+1
+                            self.status_var.set(f"Chamber {chamber_number}: Schedule activated - turning OFF (settings preserved)")
                             last_activation[board_idx]["off"] = current_datetime
-                except (ValueError, TypeError):
-                    # Skip if time format is invalid
-                    continue
+                            self.changed_boards.add(board_idx)
             
-            # Apply changes if any were made
+            # Apply changes if any were made - but only to boards that changed
             if changes_made:
-                self.root.after(0, self.apply_all_settings)
+                self.root.after(0, self.apply_changed_boards)
             
-            time.sleep(10)  # Check every 10 seconds
+            # Adaptive sleep based on time to next event
+            sleep_time = base_sleep_time
+            if min_time_diff != float('inf'):
+                # Check more frequently when close to a scheduled event
+                if min_time_diff <= 5:
+                    sleep_time = 1
+                elif min_time_diff <= 15:
+                    sleep_time = 5
+            
+            time.sleep(sleep_time)
+    
+    def apply_changed_boards(self):
+        """Apply settings only to boards that have changed states"""
+        if not hasattr(self, 'changed_boards') or not self.changed_boards:
+            return
+            
+        # Apply settings only to boards that changed
+        for board_idx in self.changed_boards:
+            if board_idx < len(self.boards):
+                self.apply_board_settings(board_idx)
+        
+        # Clear the set of changed boards
+        self.changed_boards = set()
+    
+    def send_zeros_to_board(self, board_idx):
+        """Send zeros to the board without changing UI values"""
+        if board_idx >= len(self.boards):
+            return False
+        
+        board = self.boards[board_idx]
+        # Send command with all zeros directly (non-blocking now)
+        board.send_command([0, 0, 0, 0, 0, 0])
+        return True
     
     def scan_boards(self):
         """Detect and initialize connections to XIAO RP2040 boards"""
@@ -1008,7 +1044,7 @@ class LEDControlGUI:
                 messagebox.showwarning("No Boards Found", "No XIAO RP2040 boards were detected.")
                 self.status_var.set("No boards found")
                 return
-                
+            
             # Create board connections
             for port, serial_number, chamber_number in detected_boards:
                 self.boards.append(BoardConnection(port, serial_number, chamber_number))
@@ -1032,6 +1068,7 @@ class LEDControlGUI:
         # Detect all XIAO RP2040 boards by VID:PID
         for port_info in list_ports.grep('VID:PID=2E8A:0005'):
             serial_number = port_info.serial_number
+            
             # Assign chamber number
             chamber_number = self.chamber_mapping.get(serial_number)
             # If no chamber number found, assign a high number (ensuring it comes after known chambers)
@@ -1046,6 +1083,7 @@ class LEDControlGUI:
         """Validate that entry is a valid percentage (0-100)"""
         if value == "":
             return True
+        
         try:
             val = int(value)
             return 0 <= val <= 100
@@ -1174,6 +1212,7 @@ class LEDControlGUI:
         try:
             # Collect all settings
             settings = {}
+            
             for board_idx, board in enumerate(self.boards):
                 chamber_number = board.chamber_number
                 board_settings = {"intensity": {}, "schedule": {}, "fan": {}}
@@ -1215,7 +1254,7 @@ class LEDControlGUI:
             # Save to file
             with open(file_path, 'w') as f:
                 json.dump(settings, f, indent=4)
-                
+            
             self.status_var.set(f"Settings exported to {file_path}")
             messagebox.showinfo("Export Successful", f"Settings successfully exported to {file_path}")
             
@@ -1233,7 +1272,7 @@ class LEDControlGUI:
             )
             if not file_path:
                 return  # User canceled
-                
+            
             # Read settings from file
             with open(file_path, 'r') as f:
                 settings = json.load(f)
@@ -1366,7 +1405,6 @@ class LEDControlGUI:
                     saved_values[channel_name] = self.led_entries[key].get()
                 except:
                     saved_values[channel_name] = "0"
-        
         self.board_schedules[board_idx]["saved_values"] = saved_values
         return saved_values
     
@@ -1375,13 +1413,8 @@ class LEDControlGUI:
         if time_str == "":
             return True  # Empty is okay during typing
             
-        # Check format with regex
-        import re
-        if not re.match(r'^([0-1][0-9]|2[0-3]):([0-5][0-9])$', time_str):
-            return False
-        
-        # Format is correct
-        return True
+        # Use pre-compiled pattern
+        return bool(self.time_pattern.match(time_str))
     
     def validate_time_entry(self, board_idx, entry_type, new_value):
         """Validate time entry and provide feedback"""
