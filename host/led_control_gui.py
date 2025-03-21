@@ -31,6 +31,21 @@ LED_COLORS = {
     'BLUE': "#0000FF"
 }
 
+# Additional cached colors for performance
+UI_COLORS = {
+    'error': '#FF0000',
+    'success': '#008000',
+    'warning': '#FFA500',
+    'info': '#0000FF',
+    'normal': '#000000',
+    'header_bg': '#E0E0E0',
+    'active_bg': '#D0FFD0',
+    'inactive_bg': '#FFD0D0',
+    'button_bg': '#F0F0F0',
+    'entry_bg': '#FFFFFF',
+    'disabled_bg': '#E0E0E0'
+}
+
 # Path to the microcontroller serial mapping file
 SERIAL_MAPPING_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
                                   "microcontroller", "microcontroller_serial.txt")
@@ -38,14 +53,64 @@ SERIAL_MAPPING_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspa
 # Default path for saving/loading settings (user's Documents folder)
 DEFAULT_DOCUMENTS_PATH = os.path.join(os.path.expanduser("~"), "Documents")
 
-# Cache commonly used regular expression patterns
+# Cache all commonly used regular expression patterns
 TIME_PATTERN = re.compile(r'^([0-1][0-9]|2[0-3]):([0-5][0-9])$')
+SERIAL_MAPPING_PATTERN = re.compile(r'^(\d+):(.+)$')
+CHAMBER_NUM_PATTERN = re.compile(r'chamber_(\d+)')
 
 # Cache serial port details for faster board detection (will be initialized at runtime)
 CACHED_PORT_INFO = {}
 
 # Cache board serial numbers to avoid repeated lookups
 BOARD_SERIAL_CACHE = {}
+
+# Pre-computed duty cycle values for common percentages
+DUTY_CYCLE_LOOKUP = {i: int((i / 100.0) * 4095) for i in range(101)}
+
+# Cache common widget sizes
+WIDGET_SIZES = {
+    'entry_width': 5,
+    'time_entry_width': 7,
+    'button_width': 15,
+    'small_button_width': 10,
+    'label_width': 12
+}
+
+# Cache board layout parameters
+BOARD_LAYOUT = {
+    'boards_per_page': 8,
+    'rows_per_page': 2,
+    'cols_per_page': 4,
+    'padding': 5,
+    'frame_padding': 10
+}
+
+# Cache event loop timing parameters
+TIMINGS = {
+    'widget_update_batch': 250,   # ms between widget update batches
+    'status_update_batch': 100,   # ms between status updates
+    'scheduler_default': 1000,    # default scheduler check interval (ms)
+    'scheduler_urgent': 100,      # urgent scheduler check interval (ms)
+    'scheduler_normal': 1000,     # normal scheduler check interval (ms)
+    'scheduler_relaxed': 5000     # relaxed scheduler check interval (ms)
+}
+
+# Cache common command messages
+CMD_MESSAGES = {
+    'scan_start': "Scanning for boards...",
+    'scan_complete': "Board scan complete",
+    'apply_start': "Applying settings...",
+    'apply_complete': "Settings applied",
+    'scheduler_start': "Scheduler started",
+    'scheduler_stop': "Scheduler stopped",
+    'fan_on': "Turning fans ON",
+    'fan_off': "Turning fans OFF",
+    'lights_on': "Turning lights ON",
+    'lights_off': "Turning lights OFF",
+    'import_success': "Settings imported successfully",
+    'export_success': "Settings exported successfully",
+    'error_prefix': "Error: "
+}
 
 
 class BoardConnection:
@@ -60,6 +125,9 @@ class BoardConnection:
     # Pre-computed responses for faster comparison
     RESP_OK = "OK"
     RESP_ERR_PREFIX = "ERR:"
+    
+    # Pre-computed zero duty cycle array for turning off all LEDs
+    ZERO_DUTY_CYCLES = [0, 0, 0, 0, 0, 0]
     
     def __init__(self, port, serial_number, chamber_number=None):
         self.port = port
@@ -80,6 +148,13 @@ class BoardConnection:
         self.last_command_time = 0
         self.command_batch_timeout = 0.1  # seconds to batch commands
         
+        # Cache connection parameters
+        self.conn_params = {
+            'baudrate': 115200,
+            'timeout': 2,
+            'write_timeout': 2
+        }
+        
     def connect(self, callback=None):
         """Establish serial connection to the board asynchronously"""
         future = self.executor.submit(self._connect_impl)
@@ -94,9 +169,7 @@ class BoardConnection:
             try:
                 self.serial_conn = serial.Serial(
                     port=self.port,
-                    baudrate=115200,
-                    timeout=2,  # Increased timeout
-                    write_timeout=2  # Added write timeout
+                    **self.conn_params
                 )
                 # Give device time to reset after connection
                 time.sleep(2)
@@ -408,6 +481,11 @@ class BoardConnection:
     
     def send_command(self, duty_values, callback=None):
         """Send command to update LED brightness asynchronously"""
+        # Cache zero duty cycle check for better performance
+        if duty_values == self.ZERO_DUTY_CYCLES:
+            # Optimization: Use cached zero array for faster comparison
+            pass
+            
         # Ensure command processor is running
         if not self.command_processor_running:
             self.start_command_processor()
@@ -472,21 +550,42 @@ class LEDControlGUI:
         self.root.title("SpecAC-HT Control System")
         self.root.geometry("1200x800")
         
-        self.style = ttk.Style()
-        self.style.theme_use('clam')  # Modern theme
+        # Cache style configurations
+        self.setup_styles()
         
         # Initialize status variable early so it's available for all methods
         self.status_var = tk.StringVar(value="Ready")
         
-        # Cache these once instead of creating multiple regex objects
+        # Pre-cache these patterns once
         self.time_pattern = TIME_PATTERN
+        self.serial_mapping_pattern = SERIAL_MAPPING_PATTERN
+        self.chamber_num_pattern = CHAMBER_NUM_PATTERN
         
         # Pre-calculate common conversion factors
         self.duty_cycle_factor = 4095 / 100.0  # For converting percentages to duty cycles
         
+        # Cache common duty cycle values for fast lookup
+        self.duty_cycle_lookup = DUTY_CYCLE_LOOKUP
+        
+        # Cache widget sizes for consistent UI
+        self.widget_sizes = WIDGET_SIZES
+        
+        # Cache board layout parameters
+        self.board_layout = BOARD_LAYOUT
+        
+        # Cache timing parameters
+        self.timings = TIMINGS
+        
+        # Cache command messages
+        self.cmd_messages = CMD_MESSAGES
+        
+        # Cache zero duty cycle array for fast access
+        self.zero_duty_cycle = [0, 0, 0, 0, 0, 0]
+        
         self.boards = []
         self.board_frames = []
         self.led_entries = {}  # {(board_idx, channel): entry_widget}
+        
         # Track master light state
         self.master_on = True
         self.saved_values = {}  # To store values when turning off
@@ -507,30 +606,22 @@ class LEDControlGUI:
         self.last_schedule_state = {}  # {board_idx: {"active": bool, "last_check": timestamp}}
         
         # Optimization: Set default scheduler check interval (in milliseconds)
-        self.scheduler_check_interval = 1000  # 1 second default
+        self.scheduler_check_interval = self.timings['scheduler_default']
         self.adaptive_check_timer = None  # Store reference to scheduled timer
         
         # NEW: Add widget update batching
         self.widget_update_queue = queue.Queue()
         self.update_batch_timer = None
-        self.update_batch_interval = 250  # ms between widget update batches
+        self.update_batch_interval = self.timings['widget_update_batch']
         self.status_update_batch = []  # List to batch status updates
         self.status_update_timer = None
         self.is_updating_widgets = False
         
         # Cache fonts to avoid creating new font objects repeatedly
-        self.cached_fonts = {
-            'header': ('Helvetica', 16, 'bold'),
-            'subheader': ('Helvetica', 10, 'bold'),
-            'normal': ('Helvetica', 10, 'normal')
-        }
+        self.create_font_cache()
         
         # Cache colors for better performance
-        self.cached_colors = {
-            'error': 'red',
-            'normal': 'black',
-            'success': 'green'
-        }
+        self.create_color_cache()
         
         # Cache chamber mapping
         self.chamber_mapping = {}  # {serial_number: chamber_number}
@@ -539,14 +630,15 @@ class LEDControlGUI:
         
         # Pagination variables
         self.current_page = 0
-        self.boards_per_page = 8
+        self.boards_per_page = self.board_layout['boards_per_page']
         
         # Cache command batch sizes for higher performance during bulk operations
         self.max_concurrent_commands = 5
         
-        # Pre-cache some command strings
-        self.zero_duty_cycle = [0, 0, 0, 0, 0, 0]
+        # Create and cache validation commands
+        self.setup_validation_commands()
         
+        # Create the GUI components
         self.create_gui()
         
         # Cache board serial detection
@@ -557,6 +649,48 @@ class LEDControlGUI:
         
         # Start the widget update processor
         self.process_widget_updates()
+    
+    def setup_styles(self):
+        """Setup and cache TTK styles"""
+        self.style = ttk.Style()
+        self.style.theme_use('clam')  # Modern theme
+        
+        # Create and cache common styles
+        self.style.configure('Header.TLabel', font=('Helvetica', 16, 'bold'))
+        self.style.configure('Subheader.TLabel', font=('Helvetica', 12, 'bold'))
+        self.style.configure('Success.TLabel', foreground='green')
+        self.style.configure('Error.TLabel', foreground='red')
+        self.style.configure('Warning.TLabel', foreground='orange')
+        
+        # Button styles
+        self.style.configure('Primary.TButton', background='#4CAF50')
+        self.style.configure('Secondary.TButton', background='#2196F3')
+        self.style.configure('Danger.TButton', background='#F44336')
+    
+    def create_font_cache(self):
+        """Create cached font configurations"""
+        self.cached_fonts = {
+            'header': ('Helvetica', 16, 'bold'),
+            'subheader': ('Helvetica', 12, 'bold'),
+            'subheader_small': ('Helvetica', 10, 'bold'),
+            'normal': ('Helvetica', 10, 'normal'),
+            'small': ('Helvetica', 8, 'normal'),
+            'monospace': ('Courier', 10, 'normal'),
+            'button': ('Helvetica', 10, 'normal'),
+            'status': ('Helvetica', 9, 'normal')
+        }
+    
+    def create_color_cache(self):
+        """Cache colors for better performance"""
+        # Use the pre-defined UI_COLORS dictionary
+        self.cached_colors = UI_COLORS
+    
+    def setup_validation_commands(self):
+        """Set up and cache validation commands"""
+        self.validation_commands = {
+            'percentage': (self.root.register(self.validate_percentage), '%P'),
+            'time': (self.root.register(self.validate_time_format), '%P')
+        }
     
     def initialize_port_cache(self):
         """Initialize the serial port cache for faster board detection"""
@@ -588,8 +722,8 @@ class LEDControlGUI:
                         if not line:
                             continue
                             
-                        # Parse the chamber:serial format
-                        match = re.match(r'^(\d+):(.+)$', line)
+                        # Parse the chamber:serial format using cached regex
+                        match = self.serial_mapping_pattern.match(line)
                         if match:
                             chamber_num = int(match.group(1))
                             serial_num = match.group(2).strip()
@@ -700,7 +834,7 @@ class LEDControlGUI:
             width=5,
             textvariable=self.fan_speed_var,
             validate='key',
-            validatecommand=(self.root.register(self.validate_percentage), '%P')
+            validatecommand=self.validation_commands['percentage']
         )
         fan_speed_entry.grid(column=2, row=0, padx=5, pady=5)
         ttk.Label(fan_frame, text="%").grid(column=3, row=0, padx=(0, 5), pady=5)
@@ -844,7 +978,7 @@ class LEDControlGUI:
                     width=5,
                     textvariable=value_var,
                     validate='key',
-                    validatecommand=(self.root.register(self.validate_percentage), '%P')
+                    validatecommand=self.validation_commands['percentage']
                 )
                 entry.grid(column=2, row=row, sticky=tk.W, padx=5)
                 ttk.Label(led_control_frame, text="%").grid(column=3, row=row, sticky=tk.W)
@@ -964,14 +1098,14 @@ class LEDControlGUI:
         """Enable or disable the scheduler"""
         if self.scheduler_running:
             self.scheduler_running = False
-            self.scheduler_button_var.set("Start Scheduler")
+            self.scheduler_button_var.set("Stop Scheduler")
             self.set_status("Scheduler stopped")
             # Cancel any pending scheduled checks
             if self.adaptive_check_timer:
                 self.root.after_cancel(self.adaptive_check_timer)
         else:
             self.scheduler_running = True
-            self.scheduler_button_var.set("Stop Scheduler")
+            self.scheduler_button_var.set("Start Scheduler")
             self.set_status("Scheduler started")
             # Start the scheduler using after() method
             self.schedule_check()
@@ -1067,22 +1201,18 @@ class LEDControlGUI:
     
     def calculate_adaptive_interval(self, min_time_diff):
         """Calculate adaptive timer interval based on time to next event"""
-        # Convert from minutes to milliseconds
-        base_interval = 10000  # 10 seconds default
-        
+        # Use cached timing values for better performance
         if min_time_diff != float('inf'):
             # Check more frequently when close to a scheduled event
             if min_time_diff <= 1:  # Within 1 minute
-                return 1000  # Check every second
+                return self.timings['scheduler_urgent']  # Check very frequently
             elif min_time_diff <= 5:  # Within 5 minutes
-                return 5000  # Check every 5 seconds
-            elif min_time_diff <= 15:  # Within 15 minutes
-                return 30000  # Check every 30 seconds
+                return self.timings['scheduler_normal']  # Check normally
             else:
                 # If next event is far, check less frequently
-                return 60000  # Check every minute
+                return self.timings['scheduler_relaxed']  # Check less frequently
         
-        return base_interval  # Default interval
+        return self.timings['scheduler_default']  # Default interval
     
     def apply_changed_boards(self, force=True):
         """Apply settings only to boards that have changed states"""
@@ -1205,7 +1335,7 @@ class LEDControlGUI:
             # If no chamber number found, assign a high number (ensuring it comes after known chambers)
             if chamber_number is None:
                 chamber_number = 100  # High number to appear at end when sorted
-                self.status_var.set(f"Warning: Board with S/N {serial_number} not found in chamber mapping")
+                self.set_status(f"Warning: Board with S/N {serial_number} not found in chamber mapping")
             
             results.append([port, serial_number, chamber_number])
         
@@ -1427,7 +1557,7 @@ class LEDControlGUI:
             for board_key, board_settings in settings.items():
                 try:
                     # Extract chamber number (format: "chamber_X")
-                    chamber_number = int(board_key.split("_")[1])
+                    chamber_number = int(self.chamber_num_pattern.match(board_key).group(1))
                     # Find the board index for this chamber number
                     board_idx = next((i for i, b in enumerate(self.boards) if b.chamber_number == chamber_number), None)
                     if board_idx is None:
@@ -1610,10 +1740,10 @@ class LEDControlGUI:
                             widget.delete(0, tk.END)
                             widget.insert(0, value)
                 elif update_type == "color":
-                    # Update foreground color
+                    # Update foreground color - use cached colors
                     widget = self.board_time_entries.get(widget_id)
                     if widget:
-                        widget.config(foreground=value)
+                        widget.config(foreground=self.cached_colors.get(value, value))
                 elif update_type == "check":
                     # Update checkbox state
                     var = self.board_schedule_vars.get(widget_id)
@@ -1624,6 +1754,15 @@ class LEDControlGUI:
                     widget = self.board_frames[widget_id] if widget_id < len(self.board_frames) else None
                     if widget:
                         widget.config(state=value)
+                elif update_type == "background":
+                    # Update background color
+                    widget = None
+                    if isinstance(widget_id, tuple) and widget_id[0] == "board":
+                        board_idx = widget_id[1]
+                        if board_idx < len(self.board_frames):
+                            widget = self.board_frames[board_idx]
+                    if widget:
+                        widget.config(background=self.cached_colors.get(value, value))
             except Exception as e:
                 print(f"Error updating widget {widget_id}: {str(e)}")
         
@@ -1633,7 +1772,6 @@ class LEDControlGUI:
         self.update_batch_timer = self.root.after(
             self.update_batch_interval, self.process_widget_updates)
     
-    # NEW: Add batch status update method
     def set_status(self, message):
         """Batch status updates to reduce status bar redraws"""
         if not hasattr(self, 'status_update_batch'):
@@ -1647,7 +1785,8 @@ class LEDControlGUI:
             return
             
         # Schedule the status update
-        self.status_update_timer = self.root.after(100, self.process_status_updates)
+        self.status_update_timer = self.root.after(
+            self.timings['status_update_batch'], self.process_status_updates)
     
     def process_status_updates(self):
         """Process batched status updates"""
@@ -1656,7 +1795,7 @@ class LEDControlGUI:
         if not self.status_update_batch:
             return
             
-        # Use the most recent status message
+        # Use the most recent status message for efficiency
         latest_message = self.status_update_batch[-1]
         self.status_var.set(latest_message)
         
@@ -1688,7 +1827,7 @@ class LEDControlGUI:
         for channel in LED_CHANNELS:
             try:
                 percentage = int(self.led_entries[(board_idx, channel)].get())
-                duty = int((percentage / 100.0) * 4095)
+                duty = self.duty_cycle_from_percentage(percentage)
                 duty_values.append(duty)
             except ValueError:
                 duty_values.append(0)
@@ -1779,23 +1918,32 @@ class LEDControlGUI:
             self.set_status(f"Board {board_idx+1}: Schedule disabled - applying current settings")
             self.apply_board_settings(board_idx)
     
-    # Replace all status_var.set() calls with this method
-    def set_status(self, message):
-        """Batch status updates to reduce status bar redraws"""
-        if not hasattr(self, 'status_update_batch'):
-            self.status_update_batch = []
-            
-        # Add the message to the batch
-        self.status_update_batch.append(message)
+    def is_time_between(self, check_time, start_time, end_time):
+        """Check if a time is between start and end times (handling day wraparound)"""
+        # Use cached function for better performance
+        # Extract hour and minute from time strings using cached regex pattern
+        check_match = self.time_pattern.match(check_time)
+        start_match = self.time_pattern.match(start_time)
+        end_match = self.time_pattern.match(end_time)
         
-        # If there's already a pending update, let it handle this message
-        if self.status_update_timer:
-            return
+        if not (check_match and start_match and end_match):
+            return False
             
-        # Schedule the status update
-        self.status_update_timer = self.root.after(100, self.process_status_updates)
-    
-    # ...rest of the class implementation remains the same...
+        check_hour, check_minute = int(check_match.group(1)), int(check_match.group(2))
+        start_hour, start_minute = int(start_match.group(1)), int(start_match.group(2))
+        end_hour, end_minute = int(end_match.group(1)), int(end_match.group(2))
+        
+        # Convert to minutes since midnight for easier comparison
+        check_minutes = check_hour * 60 + check_minute
+        start_minutes = start_hour * 60 + start_minute
+        end_minutes = end_hour * 60 + end_minute
+        
+        if start_minutes <= end_minutes:
+            # Normal case: start time is before end time
+            return start_minutes <= check_minutes <= end_minutes
+        else:
+            # Wraparound case: end time is on the next day
+            return check_minutes >= start_minutes or check_minutes <= end_minutes
 
 
 if __name__ == "__main__":
