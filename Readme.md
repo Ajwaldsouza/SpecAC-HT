@@ -53,8 +53,8 @@ SpecAC-HT is a comprehensive lighting and environmental control system designed 
 1. Clone the repository
     
     ```r
-    git clone https://github.com/yourusername/specac-ht.git
-    cd specac-ht
+    git clone https://github.com/Ajwaldsouza/SpecAC-HT.git
+    cd SpecAC-HT
     ```
     
 2. Install the required Python packages:
@@ -68,7 +68,7 @@ SpecAC-HT is a comprehensive lighting and environmental control system designed 
 4. Launch the control software:
     
     ```r
-    python host/led_control_gui.py
+    python3 host/led_control_gui.py
     ```
     
 
