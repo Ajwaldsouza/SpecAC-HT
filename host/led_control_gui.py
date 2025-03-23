@@ -670,10 +670,14 @@ class LEDControlGUI:
         self.scheduler_check_interval = self.timings['scheduler_default']
         self.adaptive_check_timer = None  # Store reference to scheduled timer
         
-        # NEW: Add widget update batching
+        # NEW: Add widget update batching with priority and idle-time processing
         self.widget_update_queue = queue.Queue()
+        self.urgent_widget_update_queue = queue.Queue()  # For updates that need immediate attention
         self.update_batch_timer = None
         self.update_batch_interval = self.timings['widget_update_batch']
+        self.is_processing_updates = False
+        self.pending_idle_update = False
+        
         self.status_update_batch = []  # List to batch status updates
         self.status_update_timer = None
         self.is_updating_widgets = False
@@ -718,8 +722,11 @@ class LEDControlGUI:
         # Start the widget update processor
         self.process_widget_updates()
         
-        # Start periodic queue processing
+        # Start periodic queue processing with idle-time scheduling
         self.process_gui_queue()
+        
+        # Perform an initial update_idletasks to ensure GUI is responsive
+        self.root.update_idletasks()
     
     def setup_styles(self):
         """Setup and cache TTK styles"""
@@ -1372,7 +1379,8 @@ class LEDControlGUI:
             
             # If we've updated within the last second, defer this update
             if current_time - last_update < 1.0:
-                self.root.after(1000, lambda: self.apply_changed_boards(True))
+                self.root.after_idle(lambda: self.apply_changed_boards(True))
+                return
         
         # NEW: Convert set to list once to avoid copying during iteration
         boards_to_update = list(self.changed_boards)
@@ -1392,8 +1400,8 @@ class LEDControlGUI:
                     if board_idx in self.changed_boards:
                         self.changed_boards.remove(board_idx)
                 
-            # Schedule deferred batch with a small delay - ALWAYS FORCE=TRUE for deferred batch
-            self.root.after(100, lambda: self.apply_changed_boards(True))
+            # Schedule deferred batch with a small delay during idle time
+            self.root.after_idle(lambda: self.apply_changed_boards(True))
         else:
             # Process all boards at once
             for board_idx in boards_to_update:
@@ -1402,6 +1410,9 @@ class LEDControlGUI:
             
             # Clear the set of changed boards
             self.changed_boards.clear()  # More efficient than creating a new empty set
+            
+            # Process any pending widget updates immediately
+            self.root.update_idletasks()
         
         # Update the last batch update timestamp
         self.last_batch_update = time.time()
@@ -2073,38 +2084,57 @@ class LEDControlGUI:
                 self.board_time_entries[key].config(foreground=self.cached_colors['error'])
             return False
     
-    # NEW: Add methods for batch widget updates
-    def queue_widget_update(self, widget_id, update_type, value):
+    def queue_widget_update(self, widget_id, update_type, value, urgent=False):
         """Queue a widget update to be processed in batches"""
-        self.widget_update_queue.put((widget_id, update_type, value))
+        if urgent:
+            self.urgent_widget_update_queue.put((widget_id, update_type, value))
+        else:
+            self.widget_update_queue.put((widget_id, update_type, value))
         
-        # Ensure the processor is running
-        if not self.update_batch_timer:
-            self.process_widget_updates()
-    
+        # Schedule processing during idle time if not already scheduled
+        if not self.pending_idle_update:
+            self.pending_idle_update = True
+            self.root.after_idle(self.process_widget_updates)
+
     def process_widget_updates(self):
-        """Process queued widget updates in batches"""
-        if self.is_updating_widgets:
-            # Already processing updates, just reschedule
-            self.update_batch_timer = self.root.after(
-                self.update_batch_interval, self.process_widget_updates)
+        """Process queued widget updates during GUI idle time"""
+        self.pending_idle_update = False
+        if self.is_processing_updates:
+            # Already processing updates, reschedule with after_idle
+            self.pending_idle_update = True
+            self.root.after_idle(self.process_widget_updates)
             return
             
-        self.is_updating_widgets = True
+        self.is_processing_updates = True
         
-        # Create a dictionary to store only the latest update for each widget
-        updates_by_widget = {}
-        update_count = 0
-        
-        # Process all queued updates
+        # Process all urgent updates first
+        urgent_updates_by_widget = {}
         try:
-            while not self.widget_update_queue.empty() and update_count < 50:  # Limit updates per batch
+            while not self.urgent_widget_update_queue.empty():
+                widget_id, update_type, value = self.urgent_widget_update_queue.get_nowait()
+                urgent_updates_by_widget[(widget_id, update_type)] = value
+                self.urgent_widget_update_queue.task_done()
+        except queue.Empty:
+            pass
+            
+        # Then process normal updates
+        normal_updates_by_widget = {}
+        update_count = 0
+        max_updates = 100  # Process more widgets per batch for better responsiveness
+        
+        try:
+            while not self.widget_update_queue.empty() and update_count < max_updates:
                 widget_id, update_type, value = self.widget_update_queue.get_nowait()
                 # Only keep the most recent update for each widget
-                updates_by_widget[(widget_id, update_type)] = value
+                normal_updates_by_widget[(widget_id, update_type)] = value
+                self.widget_update_queue.task_done()
                 update_count += 1
         except queue.Empty:
             pass
+        
+        # Combine updates, with urgent updates taking precedence
+        updates_by_widget = normal_updates_by_widget.copy()
+        updates_by_widget.update(urgent_updates_by_widget)
         
         # Apply the batched updates
         for (widget_id, update_type), value in updates_by_widget.items():
@@ -2144,12 +2174,17 @@ class LEDControlGUI:
             except Exception as e:
                 print(f"Error updating widget {widget_id}: {str(e)}")
         
-        self.is_updating_widgets = False
+        # Run update_idletasks to process these changes efficiently
+        if updates_by_widget:
+            self.root.update_idletasks()
         
-        # Schedule the next batch processing
-        self.update_batch_timer = self.root.after(
-            self.update_batch_interval, self.process_widget_updates)
-    
+        self.is_processing_updates = False
+        
+        # If there are still updates in the queue, schedule another processing round
+        if not self.widget_update_queue.empty() or not self.urgent_widget_update_queue.empty():
+            self.pending_idle_update = True
+            self.root.after_idle(self.process_widget_updates)
+
     def set_status(self, message):
         """Batch status updates to reduce status bar redraws"""
         if not hasattr(self, 'status_update_batch'):
@@ -2162,9 +2197,8 @@ class LEDControlGUI:
         if self.status_update_timer:
             return
             
-        # Schedule the status update
-        self.status_update_timer = self.root.after(
-            self.timings['status_update_batch'], self.process_status_updates)
+        # Schedule the status update during idle time
+        self.status_update_timer = self.root.after_idle(self.process_status_updates)
     
     def process_status_updates(self):
         """Process batched status updates"""
@@ -2179,107 +2213,9 @@ class LEDControlGUI:
         
         # Clear the batch
         self.status_update_batch = []
-    
-    def apply_board_settings(self, board_idx):
-        """Apply settings for a specific board"""
-        if board_idx >= len(self.boards):
-            messagebox.showerror("Error", "Invalid board index")
-            return
         
-        # Start background thread for applying settings to this board
-        threading.Thread(
-            target=self._apply_board_settings_worker,
-            args=(board_idx,),
-            daemon=True
-        ).start()
-    
-    def _apply_board_settings_worker(self, board_idx):
-        """Background worker thread for applying settings to a single board"""
-        if board_idx >= len(self.boards):
-            return
-        
-        board = self.boards[board_idx]
-        duty_values = []
-        
-        # Check if scheduling is enabled and get active state
-        scheduling_enabled = False
-        schedule_active = True
-        if board_idx in self.board_schedules:
-            scheduling_enabled = self.board_schedules[board_idx].get("enabled", False)
-            # If scheduling is enabled, check current active state
-            if scheduling_enabled:
-                schedule_active = self.check_board_active_state(board_idx)
-        
-        # Always save the current UI values to ensure they're preserved
-        self.save_board_ui_values(board_idx)
-        
-        # Get duty cycle values from UI for each channel
-        for channel in LED_CHANNELS:
-            try:
-                # Thread-safe access to tkinter variables requires special care
-                # Access the entries in a thread-safe way
-                entry_key = (board_idx, channel)
-                percentage = 0
-                
-                # Schedule a task on the main thread to get the value and wait for the result
-                percentage_result = {}
-                def get_percentage():
-                    try:
-                        if entry_key in self.led_entries:
-                            percentage_result['value'] = int(self.led_entries[entry_key].get())
-                    except ValueError:
-                        percentage_result['value'] = 0
-                
-                self.root.after(0, get_percentage)
-                
-                # Wait for the main thread to process the request (with timeout)
-                timeout = time.time() + 1.0  # 1 second timeout
-                while 'value' not in percentage_result and time.time() < timeout:
-                    time.sleep(0.01)
-                
-                percentage = percentage_result.get('value', 0)
-                duty = self.duty_cycle_from_percentage(percentage)
-                duty_values.append(duty)
-            except Exception:
-                duty_values.append(0)
-        
-        # If scheduling is active, we may need to override the duty values
-        if scheduling_enabled and not schedule_active:
-            # Board should be off according to schedule
-            status_msg = f"Board {board_idx+1}: Applying zeros to hardware (schedule OFF time, UI settings preserved)"
-            self.gui_queue.put(StatusUpdate(status_msg))
-            
-            # Send zeros to board, but don't change UI
-            success, msg = False, "Command not sent"
-            
-            def on_command_complete(cmd_success, cmd_msg):
-                nonlocal success, msg
-                success, msg = cmd_success, cmd_msg
-                # Send result to main thread
-                self.gui_queue.put(SettingsApplied(
-                    board_idx, cmd_success, cmd_msg, "during scheduled OFF time"))
-            
-            # Send command with all zeros directly
-            board.send_command([0, 0, 0, 0, 0, 0], callback=on_command_complete)
-            
-        else:
-            # Board should be on - apply actual values from UI
-            status_msg = "Applying settings..."
-            if scheduling_enabled and schedule_active:
-                status_msg = "Applying settings (during scheduled ON time)..."
-            self.gui_queue.put(StatusUpdate(f"Board {board_idx+1}: {status_msg}"))
-            
-            success, msg = False, "Command not sent"
-            
-            def on_command_complete(cmd_success, cmd_msg):
-                nonlocal success, msg
-                success, msg = cmd_success, cmd_msg
-                extra_info = "during scheduled ON time" if scheduling_enabled and schedule_active else None
-                # Send result to main thread
-                self.gui_queue.put(SettingsApplied(board_idx, cmd_success, cmd_msg, extra_info))
-            
-            # Send command with duty values
-            board.send_command(duty_values, callback=on_command_complete)
+        # Update idletasks to flush the status change immediately
+        self.root.update_idletasks()
     
     def update_board_schedule(self, board_idx):
         """Update the schedule for a specific board"""
@@ -2368,7 +2304,7 @@ class LEDControlGUI:
                 
                 # Handle different action types
                 if isinstance(action, StatusUpdate):
-                    self.status_var.set(action.message)
+                    self.set_status(action.message)  # Use set_status to batch updates
                     if action.is_error:
                         # Show error dialog for critical errors
                         messagebox.showerror("Error", action.message)
@@ -2455,8 +2391,17 @@ class LEDControlGUI:
         except queue.Empty:
             pass
         
-        # Schedule next queue check
-        self.root.after(self.queue_check_interval, self.process_gui_queue)
+        # Update idletasks to process any UI changes before scheduling next check
+        self.root.update_idletasks()
+        
+        # Schedule next queue check during idle time when possible, 
+        # or after a fixed interval if needed for responsiveness
+        if self.gui_queue.qsize() > 0:
+            # If queue has items, check again soon
+            self.root.after(50, self.process_gui_queue)
+        else:
+            # Otherwise, wait for the normal interval
+            self.root.after(self.queue_check_interval, self.process_gui_queue)
     
     def duty_cycle_from_percentage(self, percentage):
         """Convert a percentage (0-100) to duty cycle (0-4095)"""
