@@ -1079,82 +1079,11 @@ class LEDControlGUI:
             # Place the frame in its container using grid
             frame.grid(row=row, column=col, padx=5, pady=5, sticky=(tk.N, tk.W, tk.E, tk.S))
             
-            # LED control section
-            led_control_frame = ttk.Frame(frame)
-            led_control_frame.grid(column=0, row=0, padx=5, pady=5, sticky=(tk.W, tk.E))
+            # Use helper method to create LED control section
+            self._create_led_control_section(frame, i)
             
-            # Add header row for LED controls
-            ttk.Label(led_control_frame, text="LED Channel").grid(column=1, row=0, sticky=tk.W, padx=5)
-            ttk.Label(led_control_frame, text="Intensity (%)").grid(column=2, row=0, sticky=tk.W, padx=5)
-            
-            # Add LED controls for each channel
-            for row, (channel_name, channel_idx) in enumerate(LED_CHANNELS.items(), start=1):
-                color_frame = ttk.Frame(led_control_frame, width=20, height=20)
-                color_frame.grid(column=0, row=row, padx=5, pady=2)
-                color_label = tk.Label(color_frame, bg=LED_COLORS[channel_name], width=2)
-                color_label.pack(fill=tk.BOTH, expand=True)
-                
-                ttk.Label(led_control_frame, text=channel_name).grid(column=1, row=row, sticky=tk.W, padx=5)
-                
-                value_var = tk.StringVar(value="0")
-                # Replace Spinbox with Entry for better performance
-                entry = ttk.Entry(
-                    led_control_frame,
-                    width=5,
-                    textvariable=value_var,
-                    validate='key',
-                    validatecommand=self.validation_commands['percentage']
-                )
-                entry.grid(column=2, row=row, sticky=tk.W, padx=5)
-                ttk.Label(led_control_frame, text="%").grid(column=3, row=row, sticky=tk.W)
-                self.led_entries[(i, channel_name)] = entry
-            
-            # Scheduling section - one per board
-            schedule_frame = ttk.Frame(frame)
-            schedule_frame.grid(column=0, row=1, padx=5, pady=5, sticky=(tk.W, tk.E))
-            
-            # Create schedule controls
-            ttk.Label(schedule_frame, text="ON Time:").grid(column=0, row=0, padx=5, pady=5, sticky=tk.W)
-            on_time_var = tk.StringVar(value="08:00")
-            
-            # Add validation callback to variable
-            on_time_var.trace_add("write", lambda name, index, mode, b_idx=i, var=on_time_var: 
-                               self.validate_time_entry(b_idx, "on", var.get()))
-                               
-            on_time = ttk.Entry(schedule_frame, width=7, textvariable=on_time_var)
-            on_time.grid(column=1, row=0, padx=5, pady=5)
-            self.board_time_entries[(i, "on")] = on_time
-            
-            ttk.Label(schedule_frame, text="OFF Time:").grid(column=2, row=0, padx=5, pady=5, sticky=tk.W)
-            off_time_var = tk.StringVar(value="00:00")
-            
-            # Add validation callback to variable
-            off_time_var.trace_add("write", lambda name, index, mode, b_idx=i, var=off_time_var: 
-                                self.validate_time_entry(b_idx, "off", var.get()))
-                                
-            off_time = ttk.Entry(schedule_frame, width=7, textvariable=off_time_var)
-            off_time.grid(column=3, row=0, padx=5, pady=5)
-            self.board_time_entries[(i, "off")] = off_time
-            
-            # Schedule enable checkbox
-            schedule_var = tk.BooleanVar(value=False)
-            schedule_check = ttk.Checkbutton(
-                schedule_frame,
-                text="Enable Scheduling",
-                variable=schedule_var,
-                command=lambda b_idx=i: self.update_board_schedule(b_idx)
-            )
-            schedule_check.grid(column=4, row=0, padx=10, pady=5, sticky=tk.W)
-            self.board_schedule_vars[i] = schedule_var
-            
-            # Initialize the schedule data for this board
-            self.board_schedules[i] = {
-                "on_time": "08:00",
-                "off_time": "00:00",
-                "enabled": False,
-                "saved_values": {},
-                "active": True  # Add active flag, default to True
-            }
+            # Use helper method to create schedule section
+            self._create_schedule_section(frame, i)
             
             # Individual apply button
             ttk.Button(
@@ -1173,11 +1102,8 @@ class LEDControlGUI:
             messagebox.showwarning("No Boards", "No boards available to control.")
             return
         
-        # Start background thread for toggling lights
-        threading.Thread(
-            target=self._toggle_all_lights_worker,
-            daemon=True
-        ).start()
+        # Use helper method to start the background task
+        self._start_background_task(self._toggle_all_lights_worker)
     
     def _toggle_all_lights_worker(self):
         """Background worker thread for toggling all lights"""
@@ -1534,12 +1460,9 @@ class LEDControlGUI:
         # Update status
         self.status_var.set(self.cmd_messages['apply_start'])
         
-        # Start background thread for applying settings
+        # Use helper method to start the background task
         self.background_operations['apply_all'] = True
-        threading.Thread(
-            target=self._apply_all_settings_worker,
-            daemon=True
-        ).start()
+        self._start_background_task(self._apply_all_settings_worker)
     
     def _apply_all_settings_worker(self):
         """Background worker thread for applying settings to all boards"""
@@ -1558,12 +1481,8 @@ class LEDControlGUI:
             messagebox.showerror("Error", "Invalid board index")
             return
         
-        # Start background thread for applying settings to this board
-        threading.Thread(
-            target=self._apply_board_settings_worker,
-            args=(board_idx,),
-            daemon=True
-        ).start()
+        # Use helper method to start the background task
+        self._start_background_task(self._apply_board_settings_worker, board_idx)
     
     def _apply_board_settings_worker(self, board_idx):
         """Background worker thread for applying settings to a single board"""
@@ -1659,11 +1578,8 @@ class LEDControlGUI:
             messagebox.showwarning("No Boards", "No boards available to control fans.")
             return
         
-        # Start background thread for toggling fans
-        threading.Thread(
-            target=self._toggle_all_fans_worker,
-            daemon=True
-        ).start()
+        # Use helper method to start the background task
+        self._start_background_task(self._toggle_all_fans_worker)
     
     def _toggle_all_fans_worker(self):
         """Background worker thread for toggling all fans"""
@@ -2310,81 +2226,19 @@ class LEDControlGUI:
                         messagebox.showerror("Error", action.message)
                 
                 elif isinstance(action, BoardsDetected):
-                    if action.error:
-                        messagebox.showerror("Error Scanning Boards", action.error)
-                        self.status_var.set(f"Error: {action.error}")
-                    else:
-                        self.boards = action.boards
-                        self.create_board_frames()
-                        
-                        # Count boards by chamber ranges
-                        chambers_1_8 = sum(1 for board in self.boards if 1 <= board.chamber_number <= 8)
-                        chambers_9_16 = sum(1 for board in self.boards if 9 <= board.chamber_number <= 16)
-                        
-                        self.status_var.set(f"Found {len(self.boards)} board(s): {chambers_1_8} in chambers 1-8, {chambers_9_16} in chambers 9-16")
+                    self._handle_boards_detected(action)
                 
                 elif isinstance(action, SettingsApplied):
-                    if action.board_idx >= len(self.boards):
-                        continue
-                        
-                    chamber_number = self.boards[action.board_idx].chamber_number
-                    if action.success:
-                        if action.extra_info:
-                            self.set_status(f"Chamber {chamber_number}: Settings applied ({action.extra_info})")
-                        else:
-                            self.set_status(f"Chamber {chamber_number}: Settings applied successfully")
-                    else:
-                        messagebox.showerror(f"Error - Chamber {chamber_number}", action.message)
-                        self.set_status(f"Chamber {chamber_number}: Error - {action.message}")
+                    self._handle_settings_applied(action)
                 
                 elif isinstance(action, ToggleComplete):
-                    if action.operation_type == 'lights':
-                        self.pending_operations -= 1
-                        if self.pending_operations == 0:
-                            state_msg = "OFF" if not self.master_on else "ON"
-                            self.status_var.set(f"All lights turned {state_msg} (settings preserved)")
-                    
-                    elif action.operation_type == 'fans':
-                        self.pending_fan_operations -= 1
-                        if not action.success and action.board_idx is not None:
-                            messagebox.showerror(f"Error - Board {action.board_idx+1}", action.message)
-                        
-                        if self.pending_fan_operations == 0:
-                            if action.state is not None:
-                                action_text = "ON" if action.state else "OFF"
-                                speed_info = f" at {self.fan_speed_var.get()}%" if action.state else ""
-                                self.status_var.set(f"All fans turned {action_text}{speed_info}")
+                    self._handle_toggle_complete(action)
                 
                 elif isinstance(action, FileOperationComplete):
-                    if action.operation_type == 'import':
-                        if action.success:
-                            self.status_var.set(f"Imported settings: {action.message}")
-                            if action.data and 'applied_count' in action.data:
-                                if messagebox.askyesno("Apply Settings", 
-                                                     f"Successfully loaded {action.data['applied_count']} settings from file.\n\nDo you want to apply these settings to the boards now?"):
-                                    self.apply_all_settings()
-                                    if action.data.get('fan_settings_found', False):
-                                        self.apply_fan_settings()
-                        else:
-                            messagebox.showerror("Import Error", f"Error importing settings: {action.message}")
-                            self.status_var.set(f"Import error: {action.message}")
-                    
-                    elif action.operation_type == 'export':
-                        if action.success:
-                            self.status_var.set(f"Settings exported to {action.message}")
-                            messagebox.showinfo("Export Successful", f"Settings successfully exported to {action.message}")
-                        else:
-                            messagebox.showerror("Export Error", f"Error exporting settings: {action.message}")
-                            self.status_var.set(f"Export error: {action.message}")
+                    self._handle_file_operation_complete(action)
                 
                 elif isinstance(action, SchedulerUpdate):
-                    # Update board schedule state - FORCE TO TRUE FOR SCHEDULE CHANGES
-                    if action.board_idx in self.board_schedules: # Changed from False to True
-                        self.board_schedules[action.board_idx]["active"] = action.active
-                        # Add to changed boards set for applying settings
-                        self.changed_boards.add(action.board_idx)
-                        # Apply changes if needed
-                        self.apply_changed_boards(force=False)
+                    self._handle_scheduler_update(action)
                 
                 self.gui_queue.task_done()
                 
@@ -2403,6 +2257,227 @@ class LEDControlGUI:
             # Otherwise, wait for the normal interval
             self.root.after(self.queue_check_interval, self.process_gui_queue)
     
+    def _handle_boards_detected(self, action):
+        """Handle BoardsDetected action from the queue"""
+        if action.error:
+            messagebox.showerror("Error Scanning Boards", action.error)
+            self.status_var.set(f"Error: {action.error}")
+        else:
+            self.boards = action.boards
+            self.create_board_frames()
+            
+            # Count boards by chamber ranges
+            chambers_1_8 = sum(1 for board in self.boards if 1 <= board.chamber_number <= 8)
+            chambers_9_16 = sum(1 for board in self.boards if 9 <= board.chamber_number <= 16)
+            
+            self.status_var.set(f"Found {len(self.boards)} board(s): {chambers_1_8} in chambers 1-8, {chambers_9_16} in chambers 9-16")
+    
+    def _handle_settings_applied(self, action):
+        """Handle SettingsApplied action from the queue"""
+        if action.board_idx >= len(self.boards):
+            return
+            
+        chamber_number = self.boards[action.board_idx].chamber_number
+        if action.success:
+            if action.extra_info:
+                self.set_status(f"Chamber {chamber_number}: Settings applied ({action.extra_info})")
+            else:
+                self.set_status(f"Chamber {chamber_number}: Settings applied successfully")
+        else:
+            messagebox.showerror(f"Error - Chamber {chamber_number}", action.message)
+            self.set_status(f"Chamber {chamber_number}: Error - {action.message}")
+    
+    def _handle_toggle_complete(self, action):
+        """Handle ToggleComplete action from the queue"""
+        if action.operation_type == 'lights':
+            self.pending_operations -= 1
+            if self.pending_operations == 0:
+                state_msg = "OFF" if not self.master_on else "ON"
+                self.status_var.set(f"All lights turned {state_msg} (settings preserved)")
+        
+        elif action.operation_type == 'fans':
+            self.pending_fan_operations -= 1
+            if not action.success and action.board_idx is not None:
+                messagebox.showerror(f"Error - Board {action.board_idx+1}", action.message)
+            
+            if self.pending_fan_operations == 0:
+                if action.state is not None:
+                    action_text = "ON" if action.state else "OFF"
+                    speed_info = f" at {self.fan_speed_var.get()}%" if action.state else ""
+                    self.status_var.set(f"All fans turned {action_text}{speed_info}")
+    
+    def _handle_file_operation_complete(self, action):
+        """Handle FileOperationComplete action from the queue"""
+        if action.operation_type == 'import':
+            if action.success:
+                self.status_var.set(f"Imported settings: {action.message}")
+                if action.data and 'applied_count' in action.data:
+                    if messagebox.askyesno("Apply Settings", 
+                                         f"Successfully loaded {action.data['applied_count']} settings from file.\n\nDo you want to apply these settings to the boards now?"):
+                        self.apply_all_settings()
+                        if action.data.get('fan_settings_found', False):
+                            self.apply_fan_settings()
+            else:
+                messagebox.showerror("Import Error", f"Error importing settings: {action.message}")
+                self.status_var.set(f"Import error: {action.message}")
+        
+        elif action.operation_type == 'export':
+            if action.success:
+                self.status_var.set(f"Settings exported to {action.message}")
+                messagebox.showinfo("Export Successful", f"Settings successfully exported to {action.message}")
+            else:
+                messagebox.showerror("Export Error", f"Error exporting settings: {action.message}")
+                self.status_var.set(f"Export error: {action.message}")
+    
+    def _handle_scheduler_update(self, action):
+        """Handle SchedulerUpdate action from the queue"""
+        # Update board schedule state
+        if action.board_idx in self.board_schedules:
+            self.board_schedules[action.board_idx]["active"] = action.active
+            # Add to changed boards set for applying settings
+            self.changed_boards.add(action.board_idx)
+            # Apply changes if needed
+            self.apply_changed_boards(force=False)
+    
+    def _start_background_task(self, target_function, *args):
+        """Helper method to start a background thread for a task"""
+        thread = threading.Thread(
+            target=target_function,
+            args=args,
+            daemon=True
+        )
+        thread.start()
+        return thread
+    
+    def _create_led_control_section(self, parent_frame, board_idx):
+        """Create LED control section with consistent styling"""
+        led_control_frame = ttk.Frame(parent_frame)
+        led_control_frame.grid(column=0, row=0, padx=5, pady=5, sticky=(tk.W, tk.E))
+        
+        # Add header row for LED controls
+        ttk.Label(led_control_frame, text="LED Channel").grid(column=1, row=0, sticky=tk.W, padx=5)
+        ttk.Label(led_control_frame, text="Intensity (%)").grid(column=2, row=0, sticky=tk.W, padx=5)
+        
+        # Add LED controls for each channel
+        for row, (channel_name, channel_idx) in enumerate(LED_CHANNELS.items(), start=1):
+            self._create_led_channel_control(led_control_frame, board_idx, channel_name, channel_idx, row)
+            
+        return led_control_frame
+    
+    def _create_led_channel_control(self, parent_frame, board_idx, channel_name, channel_idx, row):
+        """Create a single LED channel control row"""
+        color_frame = ttk.Frame(parent_frame, width=20, height=20)
+        color_frame.grid(column=0, row=row, padx=5, pady=2)
+        color_label = tk.Label(color_frame, bg=LED_COLORS[channel_name], width=2)
+        color_label.pack(fill=tk.BOTH, expand=True)
+        
+        ttk.Label(parent_frame, text=channel_name).grid(column=1, row=row, sticky=tk.W, padx=5)
+        
+        value_var = tk.StringVar(value="0")
+        # Replace Spinbox with Entry for better performance
+        entry = ttk.Entry(
+            parent_frame,
+            width=5,
+            textvariable=value_var,
+            validate='key',
+            validatecommand=self.validation_commands['percentage']
+        )
+        entry.grid(column=2, row=row, sticky=tk.W, padx=5)
+        ttk.Label(parent_frame, text="%").grid(column=3, row=row, sticky=tk.W)
+        self.led_entries[(board_idx, channel_name)] = entry
+    
+    def _create_schedule_section(self, parent_frame, board_idx):
+        """Create scheduling section with consistent styling"""
+        schedule_frame = ttk.Frame(parent_frame)
+        schedule_frame.grid(column=0, row=1, padx=5, pady=5, sticky=(tk.W, tk.E))
+        
+        # Create schedule controls
+        ttk.Label(schedule_frame, text="ON Time:").grid(column=0, row=0, padx=5, pady=5, sticky=tk.W)
+        on_time_var = tk.StringVar(value="08:00")
+        
+        # Add validation callback to variable
+        on_time_var.trace_add("write", lambda name, index, mode, b_idx=board_idx, var=on_time_var: 
+                           self.validate_time_entry(b_idx, "on", var.get()))
+                           
+        on_time = ttk.Entry(schedule_frame, width=7, textvariable=on_time_var)
+        on_time.grid(column=1, row=0, padx=5, pady=5)
+        self.board_time_entries[(board_idx, "on")] = on_time
+        
+        ttk.Label(schedule_frame, text="OFF Time:").grid(column=2, row=0, padx=5, pady=5, sticky=tk.W)
+        off_time_var = tk.StringVar(value="00:00")
+        
+        # Add validation callback to variable
+        off_time_var.trace_add("write", lambda name, index, mode, b_idx=board_idx, var=off_time_var: 
+                            self.validate_time_entry(b_idx, "off", var.get()))
+                            
+        off_time = ttk.Entry(schedule_frame, width=7, textvariable=off_time_var)
+        off_time.grid(column=3, row=0, padx=5, pady=5)
+        self.board_time_entries[(board_idx, "off")] = off_time
+        
+        # Schedule enable checkbox
+        schedule_var = tk.BooleanVar(value=False)
+        schedule_check = ttk.Checkbutton(
+            schedule_frame,
+            text="Enable Scheduling",
+            variable=schedule_var,
+            command=lambda b_idx=board_idx: self.update_board_schedule(b_idx)
+        )
+        schedule_check.grid(column=4, row=0, padx=10, pady=5, sticky=tk.W)
+        self.board_schedule_vars[board_idx] = schedule_var
+        
+        # Initialize the schedule data for this board
+        self.board_schedules[board_idx] = {
+            "on_time": "08:00",
+            "off_time": "00:00",
+            "enabled": False,
+            "saved_values": {},
+            "active": True  # Add active flag, default to True
+        }
+        
+        return schedule_frame
+    
+    def _get_ui_value(self, entry_widget, default_value=0):
+        """Safely get value from a UI entry widget with proper error handling"""
+        try:
+            if entry_widget and entry_widget.winfo_exists():
+                value = entry_widget.get()
+                return int(value) if value else default_value
+            return default_value
+        except (ValueError, tk.TclError):
+            return default_value
+    
+    def _set_ui_value(self, entry_widget, value):
+        """Safely set value in a UI entry widget with proper error handling"""
+        try:
+            if entry_widget and entry_widget.winfo_exists():
+                entry_widget.delete(0, tk.END)
+                entry_widget.insert(0, str(value))
+                return True
+            return False
+        except tk.TclError:
+            return False
+    
+    def _get_values_from_ui(self, callback):
+        """Get values from UI widgets in the main thread safely"""
+        result = {'data': None, 'complete': False}
+        
+        def get_values():
+            try:
+                result['data'] = callback()
+            except Exception as e:
+                result['error'] = str(e)
+            finally:
+                result['complete'] = True
+        
+        self.root.after(0, get_values)
+        
+        # Wait for collection to complete with timeout
+        timeout = time.time() + 5  # 5 second timeout
+        while not result['complete'] and time.time() < timeout:
+            time.sleep(0.05)
+        
+        return result
+    
     def duty_cycle_from_percentage(self, percentage):
         """Convert a percentage (0-100) to duty cycle (0-4095)"""
         # If percentage is in valid range and in cache, use cached value
@@ -2412,6 +2487,114 @@ class LEDControlGUI:
         # Otherwise calculate (should not happen with valid input)
         return int((percentage / 100.0) * 4095)
 
+    # Modify existing methods to use the new helper methods
+    def toggle_all_lights(self):
+        """Toggle all lights on or off on all boards"""
+        if not self.boards:
+            messagebox.showwarning("No Boards", "No boards available to control.")
+            return
+        
+        # Use helper method to start the background task
+        self._start_background_task(self._toggle_all_lights_worker)
+    
+    def toggle_all_fans(self):
+        """Toggle all fans on or off on all boards"""
+        if not self.boards:
+            messagebox.showwarning("No Boards", "No boards available to control fans.")
+            return
+        
+        # Use helper method to start the background task
+        self._start_background_task(self._toggle_all_fans_worker)
+    
+    def apply_all_settings(self):
+        """Apply settings to all boards"""
+        if not self.boards:
+            messagebox.showwarning("No Boards", "No boards available to apply settings to.")
+            return
+            
+        # Track completion status
+        active_boards = len(self.boards)
+        self.pending_operations = active_boards
+        
+        # Update status
+        self.status_var.set(self.cmd_messages['apply_start'])
+        
+        # Use helper method to start the background task
+        self.background_operations['apply_all'] = True
+        self._start_background_task(self._apply_all_settings_worker)
+    
+    def apply_board_settings(self, board_idx):
+        """Apply settings for a specific board"""
+        if board_idx >= len(self.boards):
+            messagebox.showerror("Error", "Invalid board index")
+            return
+        
+        # Use helper method to start the background task
+        self._start_background_task(self._apply_board_settings_worker, board_idx)
+    
+    def create_board_frames(self):
+        """Create frames for each detected board, sorted by chamber number - Optimized"""
+        # Remove old frames and clean up
+        for frame in self.board_frames:
+            frame.destroy()
+        self.board_frames = []
+        self.led_entries = {}
+        
+        # Reset board lookup dictionaries
+        self.chamber_to_board_idx = {}
+        self.serial_to_board_idx = {}
+        
+        # Clear containers but preserve them
+        for container in self.page_containers:
+            if container:
+                for widget in container.winfo_children():
+                    widget.destroy()
+        
+        # Sort boards by chamber number
+        self.boards.sort(key=lambda b: b.chamber_number)
+        
+        for i, board in enumerate(self.boards):
+            chamber_number = board.chamber_number
+            serial_number = board.serial_number
+            
+            # Add chamber and serial number to lookup dictionaries
+            self.chamber_to_board_idx[chamber_number] = i
+            self.serial_to_board_idx[serial_number] = i
+            
+            # Determine which page container to use based on chamber number
+            page_idx = 0 if 1 <= chamber_number <= 8 else 1
+            parent_container = self.page_containers[page_idx]
+            
+            # Create the board frame inside the appropriate page container
+            frame = ttk.LabelFrame(parent_container, text=f"Chamber {chamber_number}")
+            self.board_frames.append(frame)
+            
+            # Calculate position within the page container (2 rows x 4 columns)
+            relative_position = (chamber_number - 1) % 8  # Position within its page (0-7)
+            row = relative_position // 4
+            col = relative_position % 4
+            
+            # Place the frame in its container using grid
+            frame.grid(row=row, column=col, padx=5, pady=5, sticky=(tk.N, tk.W, tk.E, tk.S))
+            
+            # Use helper method to create LED control section
+            self._create_led_control_section(frame, i)
+            
+            # Use helper method to create schedule section
+            self._create_schedule_section(frame, i)
+            
+            # Individual apply button
+            ttk.Button(
+                frame,
+                text="Apply", 
+                command=lambda b_idx=i: self.apply_board_settings(b_idx)
+            ).grid(column=0, row=2, pady=10, sticky=(tk.W, tk.E))
+        
+        # Update the display to show chambers 1-8 by default
+        self.current_page = 0
+        self.update_page_display()
+
+# ...existing code...
 
 if __name__ == "__main__":
     root = tk.Tk()
