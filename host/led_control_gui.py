@@ -727,6 +727,23 @@ class LEDControlGUI:
         
         # Perform an initial update_idletasks to ensure GUI is responsive
         self.root.update_idletasks()
+        
+        # Add debounce tracking for input events
+        self.debounce_timers = {}
+        self.debounce_intervals = {
+            'led_change': 500,       # ms before processing LED changes
+            'schedule_change': 300,   # ms before processing schedule changes
+            'fan_change': 300,        # ms before processing fan changes
+            'ui_update': 100          # ms before updating UI elements
+        }
+        
+        # Add queue for LED value changes 
+        self.led_value_queue = queue.Queue()
+        self.led_value_processor_running = False
+        self.led_value_processor_thread = None
+        
+        # Start LED value change processor
+        self.start_led_value_processor()
     
     def setup_styles(self):
         """Setup and cache TTK styles"""
@@ -947,6 +964,15 @@ class LEDControlGUI:
         if self.adaptive_check_timer:
             self.root.after_cancel(self.adaptive_check_timer)
         
+        # Cancel all debounce timers
+        for timer_id in self.debounce_timers.values():
+            self.root.after_cancel(timer_id)
+        
+        # Stop LED value processor
+        self.led_value_processor_running = False
+        if self.led_value_processor_thread and self.led_value_processor_thread.is_alive():
+            self.led_value_processor_thread.join(timeout=1.0)
+            
         # Cancel widget update batch timer
         if self.update_batch_timer:
             self.root.after_cancel(self.update_batch_timer)
@@ -2365,7 +2391,7 @@ class LEDControlGUI:
         return led_control_frame
     
     def _create_led_channel_control(self, parent_frame, board_idx, channel_name, channel_idx, row):
-        """Create a single LED channel control row"""
+        """Create a single LED channel control row with debounced event handling"""
         color_frame = ttk.Frame(parent_frame, width=20, height=20)
         color_frame.grid(column=0, row=row, padx=5, pady=2)
         color_label = tk.Label(color_frame, bg=LED_COLORS[channel_name], width=2)
@@ -2374,7 +2400,6 @@ class LEDControlGUI:
         ttk.Label(parent_frame, text=channel_name).grid(column=1, row=row, sticky=tk.W, padx=5)
         
         value_var = tk.StringVar(value="0")
-        # Replace Spinbox with Entry for better performance
         entry = ttk.Entry(
             parent_frame,
             width=5,
@@ -2385,9 +2410,14 @@ class LEDControlGUI:
         entry.grid(column=2, row=row, sticky=tk.W, padx=5)
         ttk.Label(parent_frame, text="%").grid(column=3, row=row, sticky=tk.W)
         self.led_entries[(board_idx, channel_name)] = entry
+        
+        # Add trace to the variable for debounced updates
+        value_var.trace_add("write", lambda name, index, mode, 
+                           b_idx=board_idx, ch_name=channel_name, widget=entry: 
+                           self.handle_led_value_change(b_idx, ch_name, widget))
     
     def _create_schedule_section(self, parent_frame, board_idx):
-        """Create scheduling section with consistent styling"""
+        """Create scheduling section with consistent styling and debounced updates"""
         schedule_frame = ttk.Frame(parent_frame)
         schedule_frame.grid(column=0, row=1, padx=5, pady=5, sticky=(tk.W, tk.E))
         
@@ -2395,10 +2425,13 @@ class LEDControlGUI:
         ttk.Label(schedule_frame, text="ON Time:").grid(column=0, row=0, padx=5, pady=5, sticky=tk.W)
         on_time_var = tk.StringVar(value="08:00")
         
-        # Add validation callback to variable
-        on_time_var.trace_add("write", lambda name, index, mode, b_idx=board_idx, var=on_time_var: 
-                           self.validate_time_entry(b_idx, "on", var.get()))
-                           
+        # Add debounced validation callback
+        def on_time_validate(var=on_time_var):
+            debounce_key = f"schedule_{board_idx}_on_time"
+            self.debounce(debounce_key, lambda: self.validate_time_entry(board_idx, "on", var.get()))
+        
+        on_time_var.trace_add("write", lambda name, index, mode: on_time_validate())
+        
         on_time = ttk.Entry(schedule_frame, width=7, textvariable=on_time_var)
         on_time.grid(column=1, row=0, padx=5, pady=5)
         self.board_time_entries[(board_idx, "on")] = on_time
@@ -2406,21 +2439,29 @@ class LEDControlGUI:
         ttk.Label(schedule_frame, text="OFF Time:").grid(column=2, row=0, padx=5, pady=5, sticky=tk.W)
         off_time_var = tk.StringVar(value="00:00")
         
-        # Add validation callback to variable
-        off_time_var.trace_add("write", lambda name, index, mode, b_idx=board_idx, var=off_time_var: 
-                            self.validate_time_entry(b_idx, "off", var.get()))
-                            
+        # Add debounced validation callback
+        def off_time_validate(var=off_time_var):
+            debounce_key = f"schedule_{board_idx}_off_time"
+            self.debounce(debounce_key, lambda: self.validate_time_entry(board_idx, "off", var.get()))
+        
+        off_time_var.trace_add("write", lambda name, index, mode: off_time_validate())
+        
         off_time = ttk.Entry(schedule_frame, width=7, textvariable=off_time_var)
         off_time.grid(column=3, row=0, padx=5, pady=5)
         self.board_time_entries[(board_idx, "off")] = off_time
         
-        # Schedule enable checkbox
+        # Schedule enable checkbox with debounced command
         schedule_var = tk.BooleanVar(value=False)
+        
+        def debounced_update_schedule():
+            debounce_key = f"schedule_{board_idx}_enable"
+            self.debounce(debounce_key, lambda: self.update_board_schedule(board_idx))
+        
         schedule_check = ttk.Checkbutton(
             schedule_frame,
             text="Enable Scheduling",
             variable=schedule_var,
-            command=lambda b_idx=board_idx: self.update_board_schedule(b_idx)
+            command=debounced_update_schedule
         )
         schedule_check.grid(column=4, row=0, padx=10, pady=5, sticky=tk.W)
         self.board_schedule_vars[board_idx] = schedule_var
@@ -2593,6 +2634,124 @@ class LEDControlGUI:
         # Update the display to show chambers 1-8 by default
         self.current_page = 0
         self.update_page_display()
+    
+    def start_led_value_processor(self):
+        """Start the background LED value change processor"""
+        if not self.led_value_processor_running:
+            self.led_value_processor_running = True
+            self.led_value_processor_thread = threading.Thread(
+                target=self._process_led_value_queue,
+                daemon=True
+            )
+            self.led_value_processor_thread.start()
+    
+    def _process_led_value_queue(self):
+        """Process LED value changes in background thread"""
+        while self.led_value_processor_running:
+            try:
+                # Get a batch of changes to process together
+                changes = []
+                try:
+                    # Get the first change
+                    board_idx, channel_name, value = self.led_value_queue.get(timeout=0.1)
+                    changes.append((board_idx, channel_name, value))
+                    
+                    # Try to get more changes from the same board to batch them
+                    batch_size = 10  # Process up to 10 changes at once
+                    for _ in range(batch_size - 1):
+                        try:
+                            next_board_idx, next_channel, next_value = self.led_value_queue.get_nowait()
+                            changes.append((next_board_idx, next_channel, next_value))
+                        except queue.Empty:
+                            break
+                except queue.Empty:
+                    continue
+                
+                # Process each change
+                for board_idx, channel_name, value in changes:
+                    # Only apply if this is the latest change for this board/channel
+                    # and only if master lights are on (otherwise we're just storing the values)
+                    if self.master_on:
+                        if board_idx < len(self.boards):
+                            # Check if scheduling is active for this board
+                            schedule_enabled = False
+                            schedule_active = True
+                            if board_idx in self.board_schedules:
+                                schedule_enabled = self.board_schedules[board_idx].get("enabled", False)
+                                if schedule_enabled:
+                                    schedule_active = self.board_schedules[board_idx].get("active", True)
+                            
+                            # Only send command if scheduling allows it
+                            if not schedule_enabled or schedule_active:
+                                # Get all LED values for this board
+                                duty_values = []
+                                for channel in LED_CHANNELS:
+                                    if channel == channel_name:
+                                        # Use the new value for the changed channel
+                                        duty = self.duty_cycle_from_percentage(value)
+                                    else:
+                                        # Get current value for other channels from UI
+                                        try:
+                                            percentage = int(self.led_entries[(board_idx, channel)].get())
+                                            duty = self.duty_cycle_from_percentage(percentage)
+                                        except (ValueError, KeyError):
+                                            duty = 0
+                                    duty_values.append(duty)
+                                
+                                # Send command to board
+                                self.boards[board_idx].send_command(duty_values)
+                    
+                    # Mark task as done
+                    self.led_value_queue.task_done()
+            
+            except Exception as e:
+                print(f"LED value processor error: {str(e)}")
+                time.sleep(0.1)
+
+    def debounce(self, key, callback, interval=None):
+        """Debounce a function call to prevent excessive executions"""
+        # Cancel any existing timer for this key
+        if key in self.debounce_timers:
+            self.root.after_cancel(self.debounce_timers[key])
+        
+        # Use specified interval or default by key type
+        if interval is None:
+            # Extract the key type (before the first underscore)
+            key_parts = key.split('_', 1)
+            key_type = key_parts[0] if len(key_parts) > 0 else 'ui_update'
+            interval = self.debounce_intervals.get(key_type, 100)
+        
+        # Set a new timer
+        self.debounce_timers[key] = self.root.after(interval, callback)
+    
+    def handle_led_value_change(self, board_idx, channel_name, entry_widget):
+        """Handle LED value change with debouncing"""
+        # Create a unique key for this entry
+        debounce_key = f"led_{board_idx}_{channel_name}"
+        
+        # Define the callback that will run after debounce
+        def process_change():
+            try:
+                # Get the current value
+                value = int(entry_widget.get())
+                
+                # Queue the change for processing in background
+                self.led_value_queue.put((board_idx, channel_name, value))
+                
+                # Store the current value in saved_values (used when toggling all lights)
+                if hasattr(self, 'saved_values'):
+                    self.saved_values[(board_idx, channel_name)] = value
+                
+                # Add to changed boards set for scheduling
+                self.changed_boards.add(board_idx)
+            except ValueError:
+                # Invalid input - ignore
+                pass
+        
+        # Debounce the event
+        self.debounce(debounce_key, process_change)
+    
+    # ...existing code...
 
 # ...existing code...
 
