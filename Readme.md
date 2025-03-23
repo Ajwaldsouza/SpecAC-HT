@@ -37,7 +37,7 @@ SpecAC-HT is a comprehensive lighting and environmental control system designed 
 ### Microcontroller Setup
 
 1. Flash MicroPython onto XIAO RP2040 boards
-2. Upload the microcontroller code files:
+2. Upload the microcontroller code files using `rshell`:
     
     ```r
     main.py
