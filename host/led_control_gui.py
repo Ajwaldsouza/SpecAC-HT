@@ -605,6 +605,9 @@ class LEDControlGUI:
         # Flag to track active background operations
         self.background_operations = {}
         
+        # Initialize page containers for efficient toggling
+        self.page_containers = [None, None]  # Will hold containers for chambers 1-8 and 9-16
+        
         # Cache style configurations
         self.setup_styles()
         
