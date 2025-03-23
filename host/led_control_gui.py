@@ -2776,5 +2776,25 @@ class LEDControlGUI:
 
 if __name__ == "__main__":
     root = tk.Tk()
-    app = LEDControlGUI(root)
-    root.mainloop()
+    # Apply system theme if available (improves performance on some platforms)
+    try:
+        from tkinter import ThemedTk
+        root = ThemedTk(theme="default")
+    except ImportError:
+        root = tk.Tk()
+        
+    # Initialize app with proper error handling
+    try:
+        app = LEDControlGUI(root)
+        root.mainloop()
+    except Exception as e:
+        import traceback
+        error_msg = f"Startup Error: {str(e)}\n\n{traceback.format_exc()}"
+        messagebox.showerror("Application Error", error_msg)
+        try:
+            # Try to save error log
+            with open(os.path.join(os.path.dirname(__file__), "error_log.txt"), "w") as f:
+                f.write(error_msg)
+        except:
+            pass
+        root.destroy()
