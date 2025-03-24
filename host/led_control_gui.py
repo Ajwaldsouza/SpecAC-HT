@@ -717,9 +717,6 @@ class LEDControlGUI:
         
         # Start periodic queue processing
         self.process_gui_queue()
-        
-        # Add a new dictionary to store settings by chamber number
-        self.chamber_settings = {}  # {chamber_number: {channel_name: value}}
     
     def setup_styles(self):
         """Setup and cache TTK styles"""
@@ -1062,12 +1059,7 @@ class LEDControlGUI:
                 
                 ttk.Label(led_control_frame, text=channel_name).grid(column=1, row=row, sticky=tk.W, padx=5)
                 
-                # Get saved value for this chamber and channel, or default to "0"
-                default_value = "0"
-                if chamber_number in self.chamber_settings and channel_name in self.chamber_settings[chamber_number]:
-                    default_value = self.chamber_settings[chamber_number][channel_name]
-                    
-                value_var = tk.StringVar(value=default_value)
+                value_var = tk.StringVar(value="0")
                 # Replace Spinbox with Entry for better performance
                 entry = ttk.Entry(
                     led_control_frame,
@@ -1397,10 +1389,6 @@ class LEDControlGUI:
     
     def scan_boards(self):
         """Detect and initialize connections to XIAO RP2040 boards"""
-        # Save current settings by chamber number before clearing
-        if self.boards:
-            self.save_chamber_settings()
-            
         # Clear previous boards and GUI elements
         for board in self.boards:
             board.disconnect()
@@ -1425,26 +1413,6 @@ class LEDControlGUI:
             target=self._scan_boards_worker,
             daemon=True
         ).start()
-    
-    def save_chamber_settings(self):
-        """Save the current LED settings for each chamber before rescanning"""
-        for board_idx, board in enumerate(self.boards):
-            chamber_number = board.chamber_number
-            if chamber_number:
-                # Create entry for this chamber if it doesn't exist
-                if chamber_number not in self.chamber_settings:
-                    self.chamber_settings[chamber_number] = {}
-                
-                # Save all channel values for this chamber
-                for channel_name in LED_CHANNELS:
-                    entry_key = (board_idx, channel_name)
-                    if entry_key in self.led_entries:
-                        try:
-                            value = self.led_entries[entry_key].get()
-                            self.chamber_settings[chamber_number][channel_name] = value
-                        except (ValueError, KeyError):
-                            # Use default if value can't be retrieved
-                            self.chamber_settings[chamber_number][channel_name] = "0"
     
     def _scan_boards_worker(self):
         """Background worker thread for scanning boards"""
