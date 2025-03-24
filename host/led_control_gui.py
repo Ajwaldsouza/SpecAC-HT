@@ -1573,8 +1573,12 @@ class LEDControlGUI:
             return
         
         board = self.boards[board_idx]
+        chamber_number = board.chamber_number if hasattr(board, 'chamber_number') else board_idx+1
         
-        # Check if scheduling is enabled and get active state
+        # Always save the current UI values to ensure they're preserved
+        self.save_board_ui_values(board_idx)
+        
+        # Check if scheduling is enabled and get active state - IMPORTANT: do this after saving values
         scheduling_enabled = False
         schedule_active = True
         if board_idx in self.board_schedules:
@@ -1582,9 +1586,9 @@ class LEDControlGUI:
             # If scheduling is enabled, check current active state
             if scheduling_enabled:
                 schedule_active = self.check_board_active_state(board_idx)
-        
-        # Always save the current UI values to ensure they're preserved
-        self.save_board_ui_values(board_idx)
+                # Update status to make scheduling state clear
+                active_msg = "ON (within scheduled hours)" if schedule_active else "OFF (outside scheduled hours)"
+                self.gui_queue.put(StatusUpdate(f"Chamber {chamber_number}: Schedule is {active_msg}"))
         
         # Get duty cycle values from UI for each channel using callback approach
         def collect_duty_values():
@@ -1624,10 +1628,10 @@ class LEDControlGUI:
                 self.root.after(0, get_value_for_channel)
         
         def send_command_to_board(duty_values):
-            # If scheduling is active, we may need to override the duty values
+            # If scheduling is enabled but not active, we should send zeros
             if scheduling_enabled and not schedule_active:
                 # Board should be off according to schedule
-                status_msg = f"Board {board_idx+1}: Applying zeros to hardware (schedule OFF time, UI settings preserved)"
+                status_msg = f"Chamber {chamber_number}: Applying zeros to hardware (schedule OFF time, UI settings preserved)"
                 self.gui_queue.put(StatusUpdate(status_msg))
                 
                 # Send zeros to board, but don't change UI
@@ -1641,10 +1645,12 @@ class LEDControlGUI:
                 
             else:
                 # Board should be on - apply actual values from UI
-                status_msg = "Applying settings..."
                 if scheduling_enabled and schedule_active:
-                    status_msg = "Applying settings (during scheduled ON time)..."
-                self.gui_queue.put(StatusUpdate(f"Board {board_idx+1}: {status_msg}"))
+                    status_msg = f"Chamber {chamber_number}: Applying settings (during scheduled ON time)"
+                else:
+                    status_msg = f"Chamber {chamber_number}: Applying settings"
+                    
+                self.gui_queue.put(StatusUpdate(status_msg))
                 
                 def on_command_complete(cmd_success, cmd_msg):
                     extra_info = "during scheduled ON time" if scheduling_enabled and schedule_active else None
@@ -2002,8 +2008,19 @@ class LEDControlGUI:
             return True
         
         is_active = self.is_time_between(current_time, on_time, off_time)
+        
+        # Add debug message to show the time comparison
+        chamber_number = self.boards[board_idx].chamber_number if board_idx < len(self.boards) else board_idx+1
+        state_msg = "ON" if is_active else "OFF"
+        self.set_status(f"Chamber {chamber_number}: Schedule check - Current: {current_time}, ON: {on_time}, OFF: {off_time} - State: {state_msg}")
+        
         # Update the active state in our tracking
         schedule_info["active"] = is_active
+        
+        # Make sure we also mark this board for update if scheduling is active
+        if board_idx not in self.changed_boards:
+            self.changed_boards.add(board_idx)
+        
         return is_active
     
     def save_board_ui_values(self, board_idx):
@@ -2212,26 +2229,38 @@ class LEDControlGUI:
             is_enabled = False
         
         self.board_schedules[board_idx]["enabled"] = is_enabled
+        
         # If scheduling was just enabled, check if we need to update active state
         if is_enabled:
-            # Check current active state
+            # Check current active state immediately
             is_active = self.check_board_active_state(board_idx)
-            # If we're outside active hours and just enabled scheduling, turn off lights
-            if not is_active:
+            chamber_number = self.boards[board_idx].chamber_number if board_idx < len(self.boards) else board_idx+1
+            
+            # Add the board to the changed set to ensure it gets updated
+            self.changed_boards.add(board_idx)
+            
+            # Update the user about the schedule state
+            if is_active:
+                self.set_status(f"Chamber {chamber_number}: Schedule enabled, within ON hours - lights will be ON")
+            else:
                 # Outside of ON period - send zeros but keep UI values
-                self.set_status(f"Board {board_idx+1}: Schedule enabled, outside ON hours - turning lights off (settings preserved)")
+                self.set_status(f"Chamber {chamber_number}: Schedule enabled, outside ON hours - turning lights off (settings preserved)")
                 # Send direct command to turn off LEDs without changing UI
                 self.send_zeros_to_board(board_idx)
         elif was_enabled and not is_enabled:
             # Scheduling was just disabled, ensure active state is reset
             self.board_schedules[board_idx]["active"] = True
             # Re-apply the current UI settings to restore the board state
-            self.set_status(f"Board {board_idx+1}: Schedule disabled - applying current settings")
+            chamber_number = self.boards[board_idx].chamber_number if board_idx < len(self.boards) else board_idx+1
+            self.set_status(f"Chamber {chamber_number}: Schedule disabled - applying current settings")
+            
+            # Add to changed boards set to ensure update happens
+            self.changed_boards.add(board_idx)
+            # Ensure immediate update by applying settings right away
             self.apply_board_settings(board_idx)
     
     def is_time_between(self, check_time, start_time, end_time):
         """Check if a time is between start and end times (handling day wraparound)"""
-        # Use cached function for better performance
         # Extract hour and minute from time strings using cached regex pattern
         check_match = self.time_pattern.match(check_time)
         start_match = self.time_pattern.match(start_time)
@@ -2249,7 +2278,11 @@ class LEDControlGUI:
         start_minutes = start_hour * 60 + start_minute
         end_minutes = end_hour * 60 + end_minute
         
-        if start_minutes <= end_minutes:
+        # Special case: if start and end times are the same, consider always active
+        if start_minutes == end_minutes:
+            return True
+        
+        if start_minutes < end_minutes:
             # Normal case: start time is before end time
             return start_minutes <= check_minutes <= end_minutes
         else:
