@@ -880,7 +880,8 @@ class LEDControlGUI:
         # Create page frames for each page (chambers 1-8 and 9-16)
         for page_id in [0, 1]:  # Page 0 = Chambers 1-8, Page 1 = Chambers 9-16
             page_frame = ttk.Frame(self.page_container)
-            page_frame.pack(fill=tk.BOTH, expand=True)
+            # Use place instead of pack to make frames truly overlap at the same position
+            page_frame.place(x=0, y=0, relwidth=1, relheight=1)
             
             # Configure the grid for this page
             for i in range(4):  # 4 columns
