@@ -870,15 +870,29 @@ class LEDControlGUI:
         self.next_button = ttk.Button(nav_frame, text="Chambers 9-16 ▶", command=self.next_page, width=15)
         self.next_button.pack(side=tk.LEFT, padx=10)
         
-        # Container frame for board frames
-        self.boards_container = ttk.Frame(boards_frame)
-        self.boards_container.pack(expand=True, fill=tk.BOTH, padx=10, pady=10)
+        # Create a container frame for stacked pages
+        self.page_container = ttk.Frame(boards_frame)
+        self.page_container.pack(expand=True, fill=tk.BOTH, padx=10, pady=10)
         
-        # Configure grid for boards_container - ensure columns and rows can expand
-        for i in range(4):  # 4 columns
-            self.boards_container.columnconfigure(i, weight=1, uniform="column")
-        for i in range(2):  # 2 rows
-            self.boards_container.rowconfigure(i, weight=1, uniform="row")
+        # Dictionary to store page frames
+        self.page_frames = {}
+        
+        # Create page frames for each page (chambers 1-8 and 9-16)
+        for page_id in [0, 1]:  # Page 0 = Chambers 1-8, Page 1 = Chambers 9-16
+            page_frame = ttk.Frame(self.page_container)
+            page_frame.pack(fill=tk.BOTH, expand=True)
+            
+            # Configure the grid for this page
+            for i in range(4):  # 4 columns
+                page_frame.columnconfigure(i, weight=1, uniform="column")
+            for i in range(2):  # 2 rows
+                page_frame.rowconfigure(i, weight=1, uniform="row")
+                
+            # Store the page frame in the dictionary
+            self.page_frames[page_id] = page_frame
+        
+        # Initially raise page 0 (chambers 1-8)
+        self.page_frames[0].tkraise()
         
         # Fan control frame (new)
         fan_frame = ttk.LabelFrame(main_frame, text="Fan Controls")
@@ -966,9 +980,8 @@ class LEDControlGUI:
     
     def update_page_display(self):
         """Update the display to show chambers 1-8 or 9-16 based on current page"""
-        # Hide all board frames first
-        for frame in self.board_frames:
-            frame.grid_remove()
+        # Raise the appropriate page frame to the top
+        self.page_frames[self.current_page].tkraise()
         
         # NEW: More efficient counting using dictionary comprehension and sum
         boards_1_8 = sum(1 for chamber in self.chamber_to_board_idx if 1 <= chamber <= 8)
@@ -988,22 +1001,8 @@ class LEDControlGUI:
             first_chamber = 9
             last_chamber = 16
         
-        # NEW: More efficient display of boards using chamber-to-board mapping
-        displayed_count = 0
-        for chamber_number in range(first_chamber, last_chamber + 1):
-            if chamber_number in self.chamber_to_board_idx:
-                board_idx = self.chamber_to_board_idx[chamber_number]
-                
-                # Calculate position within the page (2 rows x 4 columns)
-                relative_position = chamber_number - first_chamber
-                row = relative_position // 4
-                col = relative_position % 4
-                
-                if board_idx < len(self.board_frames):
-                    self.board_frames[board_idx].grid(row=row, column=col, padx=5, pady=5, sticky=(tk.N, tk.W, tk.E, tk.S))
-                    displayed_count += 1
-        
         # Update status message to show how many chambers are displayed
+        displayed_count = sum(1 for chamber in self.chamber_to_board_idx if first_chamber <= chamber <= last_chamber)
         self.status_var.set(f"Displaying {displayed_count} chambers (Chambers {first_chamber}-{last_chamber})")
     
     def create_board_frames(self):
@@ -1029,7 +1028,17 @@ class LEDControlGUI:
             self.chamber_to_board_idx[chamber_number] = i
             self.serial_to_board_idx[serial_number] = i
             
-            frame = ttk.LabelFrame(self.boards_container, text=f"Chamber {chamber_number}")
+            # Determine which page this chamber belongs to
+            page_id = 0 if 1 <= chamber_number <= 8 else 1
+            page_frame = self.page_frames[page_id]
+            
+            # Calculate position within the page (2 rows x 4 columns)
+            relative_position = chamber_number - (1 if page_id == 0 else 9)
+            row = relative_position // 4
+            col = relative_position % 4
+            
+            frame = ttk.LabelFrame(page_frame, text=f"Chamber {chamber_number}")
+            frame.grid(row=row, column=col, padx=5, pady=5, sticky=(tk.N, tk.W, tk.E, tk.S))
             self.board_frames.append(frame)
             
             # LED control section
