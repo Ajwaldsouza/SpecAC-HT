@@ -1494,13 +1494,43 @@ class LEDControlGUI:
     def _apply_all_settings_worker(self):
         """Background worker thread for applying settings to all boards"""
         try:
+            # First, check all schedules to provide a combined status update
+            scheduled_boards = 0
+            active_schedules = 0
+            inactive_schedules = 0
+            
             for i in range(len(self.boards)):
+                if i in self.board_schedules and self.board_schedules[i].get("enabled", False):
+                    scheduled_boards += 1
+                    is_active = self.check_board_active_state(i)
+                    if is_active:
+                        active_schedules += 1
+                    else:
+                        inactive_schedules += 1
+            
+            # Show summary of schedule states if any schedules are enabled
+            if scheduled_boards > 0:
+                status_message = f"Applying settings to {len(self.boards)} boards - " + \
+                                f"{scheduled_boards} with schedules: {active_schedules} in ON period, " + \
+                                f"{inactive_schedules} in OFF period"
+                self.gui_queue.put(StatusUpdate(status_message))
+            
+            # Apply settings to each board based on its schedule
+            for i in range(len(self.boards)):
+                # Apply settings - the schedule state is checked inside _apply_board_settings_worker
                 self._apply_board_settings_worker(i)
                 # Small delay between boards to avoid overwhelming the system
                 time.sleep(0.1)
+                
         finally:
             # Clear operation flag
             self.background_operations['apply_all'] = False
+            
+            # Add a final status update to confirm completion
+            if scheduled_boards > 0:
+                self.gui_queue.put(StatusUpdate(f"Settings applied - boards with scheduled OFF time have lights turned off"))
+            else:
+                self.gui_queue.put(StatusUpdate("All settings applied successfully"))
     
     def apply_board_settings(self, board_idx):
         """Apply settings for a specific board"""
@@ -1979,7 +2009,7 @@ class LEDControlGUI:
         if not schedule_info.get("enabled", False):
             return True  # Not using scheduling, so always active
         
-        # Get time values
+        # Get time values - cache the current time to ensure consistent checking
         current_time = datetime.now().strftime("%H:%M")
         on_time = schedule_info.get("on_time", "08:00")
         off_time = schedule_info.get("off_time", "00:00")
@@ -1987,12 +2017,19 @@ class LEDControlGUI:
         # Validate time formats
         if not self.validate_time_format(on_time) or not self.validate_time_format(off_time):
             # If time format is invalid, default to active (safer)
-            self.status_var.set(f"Board {board_idx+1}: WARNING - Invalid schedule time format. Using default ON state.")
+            self.gui_queue.put(StatusUpdate(f"Board {board_idx+1}: WARNING - Invalid schedule time format. Using default ON state."))
             return True
         
         is_active = self.is_time_between(current_time, on_time, off_time)
+        
         # Update the active state in our tracking
         schedule_info["active"] = is_active
+        
+        # Log the time check result for debugging
+        chamber_number = self.boards[board_idx].chamber_number if board_idx < len(self.boards) else board_idx+1
+        status = "ON" if is_active else "OFF"
+        self.gui_queue.put(StatusUpdate(f"Chamber {chamber_number}: Schedule check - current time {current_time} is {status} ({on_time} to {off_time})"))
+        
         return is_active
     
     def save_board_ui_values(self, board_idx):
