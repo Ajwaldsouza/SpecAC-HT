@@ -395,7 +395,7 @@ class LEDControlGUI:
 
         # --- Caching and Setup ---
         self.create_font_cache()
-        self.create_color_cache()
+        self.create_color_cache() # Call before setup_styles
         self.setup_styles()
         self.load_chamber_mapping()
         self.setup_validation_commands()
@@ -413,15 +413,28 @@ class LEDControlGUI:
         self.style = ttk.Style()
         try: self.style.theme_use('clam')
         except tk.TclError: print("Warning: 'clam' theme not available, using default.")
+
         # Configure styles using cached fonts and colors
-        self.style.configure('Header.TLabel', font=self.cached_fonts['header'])
-        self.style.configure('Subheader.TLabel', font=self.cached_fonts['subheader'])
-        self.style.configure('Success.TLabel', foreground=self.cached_colors['success'])
-        self.style.configure('Error.TLabel', foreground=self.cached_colors['error'])
-        self.style.configure('Warning.TLabel', foreground=self.cached_colors['warning'])
-        self.style.configure('ScheduleBase.TFrame', background=self.cached_colors['schedule_frame_bg'], borderwidth=1, relief="groove")
-        self.style.configure('ActiveSchedule.TFrame', background=self.cached_colors['active_bg'])
-        self.style.configure('InactiveSchedule.TFrame', background=self.cached_colors['inactive_bg'])
+        # Check if attributes exist before using them
+        if hasattr(self, 'cached_fonts'):
+            self.style.configure('Header.TLabel', font=self.cached_fonts['header'])
+            self.style.configure('Subheader.TLabel', font=self.cached_fonts['subheader'])
+        else:
+            print("Error: cached_fonts missing during setup_styles")
+            # Fallback default fonts
+            self.style.configure('Header.TLabel', font=('Helvetica', 16, 'bold'))
+            self.style.configure('Subheader.TLabel', font=('Helvetica', 12, 'bold'))
+
+        if hasattr(self, 'cached_colors'): # <<< **FIXED: Added check here**
+            self.style.configure('Success.TLabel', foreground=self.cached_colors['success'])
+            self.style.configure('Error.TLabel', foreground=self.cached_colors['error'])
+            self.style.configure('Warning.TLabel', foreground=self.cached_colors['warning'])
+            self.style.configure('ScheduleBase.TFrame', background=self.cached_colors['schedule_frame_bg'], borderwidth=1, relief="groove")
+            self.style.configure('ActiveSchedule.TFrame', background=self.cached_colors['active_bg'])
+            self.style.configure('InactiveSchedule.TFrame', background=self.cached_colors['inactive_bg'])
+        else:
+            print("Error: cached_colors missing during setup_styles")
+            # No easy fallback for background colors, styles might look plain
 
     def create_font_cache(self):
         """Create cached font configurations"""
