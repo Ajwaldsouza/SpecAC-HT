@@ -138,6 +138,7 @@ For example:
 - **Communication Errors**: Check USB connections and verify the microcontroller is running properly
 - **LED Not Responding**: Verify the wiring between the PCA9685 and LED channels
 - **Fan Not Responding**: Check PWM and tachometer connections
+- **Scheduling Not Working**: Verify time formats are correct (HH:MM, 24-hour format)
 
 ---
 
