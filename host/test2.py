@@ -595,42 +595,57 @@ class LEDControlGUI:
     def on_closing(self):
         """Clean up resources and close the application"""
         print("Closing application...")
-        if messagebox.askokcancel("Quit", "Do you want to quit? This will stop schedules and turn off devices."):
-            # Cancel timers
-            if self.adaptive_check_timer: self.root.after_cancel(self.adaptive_check_timer)
-            if self.status_update_timer: self.root.after_cancel(self.status_update_timer)
-            self.adaptive_check_timer = None
-            self.status_update_timer = None
-            self.scheduler_running = False
-            print("Timers cancelled, scheduler stopped.")
+        
+        # Ask the user if they want to turn off devices or keep them running
+        turn_off_devices = messagebox.askyesnocancel("Quit", 
+                                        "Would you like to:\n\n"
+                                        "• YES: Turn off all lights and fans before quitting\n"
+                                        "• NO: Keep lights and fans running with current settings\n"
+                                        "• CANCEL: Return to application\n\n"
+                                        "NOTE: Scheduled changes will NOT occur after closing.")
+        
+        if turn_off_devices is None:  # User clicked Cancel
+            print("Quit cancelled.")
+            return
+            
+        # Cancel timers
+        if self.adaptive_check_timer: self.root.after_cancel(self.adaptive_check_timer)
+        if self.status_update_timer: self.root.after_cancel(self.status_update_timer)
+        self.adaptive_check_timer = None
+        self.status_update_timer = None
+        self.scheduler_running = False
+        print("Timers cancelled, scheduler stopped.")
 
-            # Turn off devices
+        # Turn off devices only if requested
+        boards_to_cleanup = list(self.boards)  # Copy list
+        if turn_off_devices:
             print("Turning off all lights and fans...")
-            boards_to_turn_off = list(self.boards) # Copy list
-            if boards_to_turn_off:
-                for i, board in enumerate(boards_to_turn_off):
+            if boards_to_cleanup:
+                for i, board in enumerate(boards_to_cleanup):
                     board.queue_command(BoardConnection.CMD_SETALL, ZERO_DUTY_CYCLES, i)
                     board.queue_command(BoardConnection.CMD_FAN_SET, 0, i)
                 print("Waiting briefly for OFF commands...")
-                time.sleep(1.0) # Shorter wait, cleanup will handle the rest
-            else: print("No boards connected.")
+                time.sleep(1.0)  # Shorter wait, cleanup will handle the rest
+            else: 
+                print("No boards connected.")
+        else:
+            print("Keeping all lights and fans at current settings.")
 
-            # Cleanup connections
-            print(f"Cleaning up {len(boards_to_turn_off)} board connections...")
-            cleanup_threads = []
-            for i, board in enumerate(boards_to_turn_off):
-                thread = threading.Thread(target=board.cleanup, name=f"Cleanup-{board.port}")
-                cleanup_threads.append(thread)
-                thread.start()
-            for thread in cleanup_threads:
-                thread.join(timeout=3.0) # Shorter timeout for cleanup join
-                if thread.is_alive(): print(f"Warn: Cleanup thread {thread.name} timed out.")
-            print("Board cleanup finished.")
+        # Cleanup connections (but don't turn off anything if not requested)
+        print(f"Cleaning up {len(boards_to_cleanup)} board connections...")
+        cleanup_threads = []
+        for i, board in enumerate(boards_to_cleanup):
+            thread = threading.Thread(target=board.cleanup, name=f"Cleanup-{board.port}")
+            cleanup_threads.append(thread)
+            thread.start()
+        for thread in cleanup_threads:
+            thread.join(timeout=3.0)  # Shorter timeout for cleanup join
+            if thread.is_alive(): print(f"Warn: Cleanup thread {thread.name} timed out.")
+        print("Board cleanup finished.")
 
-            print("Destroying root window...")
-            self.root.destroy()
-            print("Application closed.")
-        else: print("Quit cancelled.")
+        print("Destroying root window...")
+        self.root.destroy()
+        print("Application closed.")
 
     def next_page(self):
         """Navigate to the next page of chambers"""
@@ -830,14 +845,14 @@ class LEDControlGUI:
         """Enable or disable the scheduler globally."""
         if self.scheduler_running:
             self.scheduler_running = False
-            self.scheduler_button_var.set("Start Scheduler")
+            self.scheduler_button_var.set("Stop Scheduler")
             self.set_status(self.cmd_messages['scheduler_stop'])
             if self.adaptive_check_timer: self.root.after_cancel(self.adaptive_check_timer)
             self.adaptive_check_timer = None
             print("Scheduler stopped.")
         else:
             self.scheduler_running = True
-            self.scheduler_button_var.set("Stop Scheduler")
+            self.scheduler_button_var.set("Start Scheduler")
             self.set_status(self.cmd_messages['scheduler_start'])
             print("Scheduler started.")
             self.schedule_check() # Start first check
