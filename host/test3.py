@@ -395,7 +395,8 @@ class LEDControlGUI:
 
         # --- Caching and Setup ---
         self.cmd_messages = CMD_MESSAGES
-        self.widget_sizes = WIDGET_SIZES # **FIXED: Assign global dict to instance attribute**
+        self.widget_sizes = WIDGET_SIZES
+        self.board_layout = BOARD_LAYOUT # **FIXED: Assign global dict to instance attribute**
         self.create_font_cache()
         self.create_color_cache() # Call before setup_styles
         self.setup_styles()
@@ -710,11 +711,13 @@ class LEDControlGUI:
         self.boards.sort(key=lambda b: b.chamber_number if b.chamber_number is not None else float('inf'))
 
         # --- Create Frames (Optimized loop) ---
-        # **FIX**: Check if widget_sizes exists before accessing
-        if not hasattr(self, 'widget_sizes'):
-             print("Error: widget_sizes not initialized in create_board_frames!")
-             # Provide default values as a fallback
-             self.widget_sizes = WIDGET_SIZES
+        # Check if widget_sizes and board_layout exist before accessing
+        if not hasattr(self, 'widget_sizes') or not hasattr(self, 'board_layout'):
+             print("Error: widget_sizes or board_layout not initialized in create_board_frames!")
+             # Provide default values as a fallback or return
+             self.widget_sizes = WIDGET_SIZES # Attempt fallback
+             self.board_layout = BOARD_LAYOUT # Attempt fallback
+             # return # Or maybe return to prevent further errors
 
         validate_percent_cmd = self.validation_commands['percentage']
         font_normal = self.cached_fonts['normal']
