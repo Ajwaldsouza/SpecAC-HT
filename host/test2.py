@@ -395,6 +395,8 @@ class LEDControlGUI:
 
         # --- Caching and Setup ---
         self.cmd_messages = CMD_MESSAGES # **FIXED: Assign global dict to instance attribute**
+        self.widget_sizes = WIDGET_SIZES  # Add missing attribute for widget sizes
+        self.board_layout = BOARD_LAYOUT  # Also add board_layout for consistency
         self.create_font_cache()
         self.create_color_cache() # Call before setup_styles
         self.setup_styles()
@@ -1374,7 +1376,7 @@ class LEDControlGUI:
             sh, sm = map(int, start_time_str.split(':')); start_m = sh * 60 + sm
             eh, em = map(int, end_time_str.split(':')); end_m = eh * 60 + em
             if start_m == end_m: return True # Assume 24h if same
-            if start_m < end_m: return start_m <= check_m < end_m
+            if start_m < end_m:return start_m <= check_m < end_m
             else: return check_m >= start_m or check_m < end_m
         except: return False # Invalid format -> False
 
