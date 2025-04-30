@@ -577,27 +577,28 @@ class LEDControlGUI:
             self.scheduler_running = False
             # print("Timers cancelled, scheduler stopped.") # Less verbose
 
-            # Turn off devices
-            # print("Turning off all lights and fans...") # Less verbose
-            boards_to_turn_off = list(self.boards)
-            if boards_to_turn_off:
-                for i, board in enumerate(boards_to_turn_off):
-                    board.queue_command(BoardConnection.CMD_SETALL, ZERO_DUTY_CYCLES, i)
-                    board.queue_command(BoardConnection.CMD_FAN_SET, 0, i)
-                # print("Waiting briefly for OFF commands...") # Less verbose
-                time.sleep(0.8) # Reduced wait
+            # **MODIFIED: Remove commands that turn off devices**
+            # print("Turning off all lights and fans...") # Removed
+            # boards_to_turn_off = list(self.boards)
+            # if boards_to_turn_off:
+            #     for i, board in enumerate(boards_to_turn_off):
+            #         board.queue_command(BoardConnection.CMD_SETALL, ZERO_DUTY_CYCLES, i) # Removed
+            #         board.queue_command(BoardConnection.CMD_FAN_SET, 0, i) # Removed
+            #     print("Waiting briefly for OFF commands...") # Removed
+            #     time.sleep(0.8) # Reduced wait # Removed
             # else: print("No boards connected.") # Less verbose
 
-            # Cleanup connections
-            # print(f"Cleaning up {len(boards_to_turn_off)} board connections...") # Less verbose
+            # Cleanup connections (This will stop command processors and close ports)
+            boards_to_cleanup = list(self.boards) # Copy list
+            print(f"Cleaning up {len(boards_to_cleanup)} board connections...")
             cleanup_threads = []
-            for i, board in enumerate(boards_to_turn_off):
+            for i, board in enumerate(boards_to_cleanup):
                 thread = threading.Thread(target=board.cleanup, name=f"Cleanup-{board.port}")
                 cleanup_threads.append(thread); thread.start()
             for thread in cleanup_threads:
                 thread.join(timeout=2.5) # Reduced timeout
                 if thread.is_alive(): print(f"Warn: Cleanup thread {thread.name} timed out.")
-            # print("Board cleanup finished.") # Less verbose
+            print("Board cleanup finished.")
 
             # print("Destroying root window...") # Less verbose
             self.root.destroy()
