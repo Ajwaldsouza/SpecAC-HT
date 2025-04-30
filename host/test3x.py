@@ -351,6 +351,7 @@ class LEDControlGUI:
         self.saved_values = {}
         self.fans_on = False
         self.fan_speed_var = tk.StringVar(value="50")
+        self.fan_button_var = tk.StringVar(value="Turn Fans ON") # **FIXED: Initialize fan_button_var**
         self.channel_schedules = {}
         self.channel_time_entries = {}
         self.channel_schedule_vars = {}
@@ -543,6 +544,7 @@ class LEDControlGUI:
         # --- Fan Control Frame ---
         fan_frame = ttk.LabelFrame(main_frame, text="Fan Controls")
         fan_frame.grid(column=0, row=2, sticky="ew", pady=5, padx=10)
+        # **FIXED: Use self.fan_button_var which is now initialized in __init__**
         ttk.Button(fan_frame, textvariable=self.fan_button_var, command=self.toggle_all_fans, width=self.widget_sizes['button_width']).grid(column=0, row=0, padx=10, pady=2)
         ttk.Label(fan_frame, text="Fan Speed:").grid(column=1, row=0, padx=(20, 5), pady=2)
         fan_speed_entry = ttk.Entry(fan_frame, width=self.widget_sizes['entry_width'], textvariable=self.fan_speed_var, validate='key', validatecommand=self.validation_commands['percentage'])
@@ -668,6 +670,11 @@ class LEDControlGUI:
         self.boards.sort(key=lambda b: b.chamber_number if b.chamber_number is not None else float('inf'))
 
         # --- Pre-cache values used in the loop ---
+        if not hasattr(self, 'widget_sizes') or not hasattr(self, 'board_layout'):
+             print("Error: widget_sizes or board_layout not initialized in create_board_frames!")
+             self.widget_sizes = WIDGET_SIZES # Attempt fallback
+             self.board_layout = BOARD_LAYOUT # Attempt fallback
+
         validate_percent_cmd = self.validation_commands['percentage']
         validate_time_cmd = self.validation_commands['time_hhmm']
         font_normal = self.cached_fonts['normal']
@@ -953,13 +960,23 @@ class LEDControlGUI:
     def _apply_settings_to_multiple_worker(self, board_indices, is_apply_all):
         """Background worker for applying settings."""
         num_boards = len(board_indices); processed_count = 0
-        all_ui_data = {}; collect_result = {'data': {}, 'error': None, 'complete': False}
+        all_ui_percentages = {}; collect_result = {'data': {}, 'error': None, 'complete': False} # Store percentages now
+
+        # **MODIFIED: Collect percentages, not duty cycles**
         def collect_batch_ui_data():
             batch_data = {}
             try:
                 for idx in board_indices:
                     if idx >= len(self.boards): continue
-                    board_data = {cn: self.duty_cycle_from_percentage(self.led_entries.get((idx, cn)).get() if self.led_entries.get((idx, cn)) else 0) for cn in LED_CHANNEL_NAMES}
+                    board_data = {cn: 0 for cn in LED_CHANNEL_NAMES} # Pre-fill with 0 percentages
+                    for channel_name in LED_CHANNEL_NAMES:
+                        entry = self.led_entries.get((idx, channel_name))
+                        if entry:
+                             try:
+                                  if entry.winfo_exists():
+                                       val = int(entry.get())
+                                       if 0 <= val <= 100: board_data[channel_name] = val # Store percentage
+                             except (ValueError, tk.TclError): pass
                     batch_data[idx] = board_data
                 collect_result['data'] = batch_data
             except Exception as e: collect_result['error'] = f"Error collecting UI data: {e}"
@@ -973,30 +990,26 @@ class LEDControlGUI:
              self.gui_queue.put(StatusUpdate(error_msg, is_error=True))
              if is_apply_all: self.root.after(0, lambda: self.background_operations.pop('apply_all', None))
              return
-        all_ui_data = collect_result['data']
+        all_ui_percentages = collect_result['data'] # Now holds percentages
 
         try:
             current_time_hhmm = datetime.now().strftime("%H:%M")
             for board_idx in board_indices:
-                if board_idx not in all_ui_data or board_idx >= len(self.boards): continue
+                if board_idx not in all_ui_percentages or board_idx >= len(self.boards): continue
                 board = self.boards[board_idx]
-                ui_percentages = all_ui_data[board_idx] # This actually contains duty cycles now
+                ui_percentages = all_ui_percentages[board_idx] # Get collected percentages
                 final_duties = list(ZERO_DUTY_CYCLES)
                 for channel_idx, channel_name in enumerate(LED_CHANNEL_NAMES):
                     sched_info = self.channel_schedules.get(board_idx, {}).get(channel_name, {})
-                    apply_ui_value = True # Default to applying UI value
+                    apply_ui_value = True # Default
                     if sched_info.get("enabled"):
                         on_t = sched_info.get("on_time", ""); off_t = sched_info.get("off_time", "")
                         if self.validate_internal_time_format(on_t) and self.validate_internal_time_format(off_t):
                             if not self.is_time_between(current_time_hhmm, on_t, off_t):
                                 apply_ui_value = False # Scheduled OFF
                     if apply_ui_value:
-                        # Get percentage from UI data (needs modification in collection)
-                        # For now, assume ui_percentages holds percentages, convert here
-                        # This is inefficient - collection should get percentages
-                        # Let's assume collection gets percentages for now
-                        percentage = ui_percentages.get(channel_name, 0) # Assume this key exists
-                        final_duties[channel_idx] = self.duty_cycle_from_percentage(percentage)
+                        percentage = ui_percentages.get(channel_name, 0) # Get percentage
+                        final_duties[channel_idx] = self.duty_cycle_from_percentage(percentage) # Convert here
                     # else: final_duties remains 0
 
                 board.send_led_command(final_duties, board_idx)
@@ -1309,11 +1322,7 @@ class LEDControlGUI:
                         if frame:
                              try:
                                   if frame.winfo_exists():
-                                       # **OPTIMIZATION: Check current style before configuring**
                                        target_style = 'ActiveSchedule.TFrame' if active else 'InactiveSchedule.TFrame'
-                                       # Note: Getting current style might be complex/unreliable with ttk.
-                                       # For simplicity, we still apply the config, but Tkinter/ttk might optimize internally if unchanged.
-                                       # If this proves to be a bottleneck, more complex state tracking would be needed.
                                        frame.config(style=target_style)
                              except tk.TclError: pass
                 # --- End Handle Actions ---
