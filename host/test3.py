@@ -390,13 +390,14 @@ class LEDControlGUI:
         self.chamber_mapping = {}
         self.reverse_chamber_mapping = {}
         self.current_page = 0
-        self.boards_per_page = BOARD_LAYOUT['boards_per_page']
+        # self.boards_per_page is now accessed via self.board_layout
         # --- End Core Data Structures ---
 
         # --- Caching and Setup ---
         self.cmd_messages = CMD_MESSAGES
         self.widget_sizes = WIDGET_SIZES
         self.board_layout = BOARD_LAYOUT # **FIXED: Assign global dict to instance attribute**
+        self.boards_per_page = self.board_layout['boards_per_page'] # Assign derived value
         self.create_font_cache()
         self.create_color_cache() # Call before setup_styles
         self.setup_styles()
@@ -726,10 +727,10 @@ class LEDControlGUI:
         font_sched_entry = self.cached_fonts['schedule_entry']
         entry_width = self.widget_sizes['entry_width']
         time_entry_width = self.widget_sizes['time_entry_width']
-        frame_pad = self.board_layout['frame_padding']
-        pad = self.board_layout['padding']
-        cols_per_page = self.board_layout['cols_per_page']
-        boards_per_page = self.boards_per_page
+        frame_pad = self.board_layout['frame_padding'] # Use cached value
+        pad = self.board_layout['padding'] # Use cached value
+        cols_per_page = self.board_layout['cols_per_page'] # Use cached value
+        boards_per_page = self.boards_per_page # Use cached value
 
         for i, board in enumerate(self.boards):
             chamber_num = board.chamber_number
