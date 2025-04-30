@@ -33,7 +33,7 @@ UI_COLORS = {
     'entry_bg': '#FFFFFF', 'disabled_bg': '#E0E0E0', 'schedule_frame_bg': '#F5F5F5'
 }
 WIDGET_SIZES = {
-    'entry_width': 5, 'time_entry_width': 7, 'button_width': 15,
+    'entry_width': 5, 'time_entry_width': 6, 'button_width': 15, # Adjusted time entry width for HHMM
     'small_button_width': 10, 'label_width': 12, 'schedule_label_width': 8
 }
 BOARD_LAYOUT = {
@@ -77,7 +77,8 @@ DEFAULT_DOCUMENTS_PATH = os.path.join(os.path.expanduser("~"), "Documents")
 
 
 # --- Cached Regex and Lookups ---
-TIME_PATTERN = re.compile(r'^([0-1][0-9]|2[0-3]):([0-5][0-9])$')
+# ** MODIFIED: Updated regex to match HHMM format **
+TIME_PATTERN = re.compile(r'^([0-1][0-9]|2[0-3])([0-5][0-9])$') # HHMM format
 SERIAL_MAPPING_PATTERN = re.compile(r'^(\d+):(.+)$')
 CHAMBER_NUM_PATTERN = re.compile(r'chamber_(\d+)')
 DUTY_CYCLE_LOOKUP = {i: int((i / 100.0) * 4095) for i in range(101)}
@@ -396,7 +397,7 @@ class LEDControlGUI:
         # --- Caching and Setup ---
         self.cmd_messages = CMD_MESSAGES
         self.widget_sizes = WIDGET_SIZES
-        self.board_layout = BOARD_LAYOUT # **FIXED: Assign global dict to instance attribute**
+        self.board_layout = BOARD_LAYOUT
         self.boards_per_page = self.board_layout['boards_per_page'] # Assign derived value
         self.create_font_cache()
         self.create_color_cache() # Call before setup_styles
@@ -458,7 +459,12 @@ class LEDControlGUI:
     def setup_validation_commands(self):
         """Set up and cache validation commands"""
         vcmd_percentage = (self.root.register(self.validate_percentage), '%P')
-        self.validation_commands = {'percentage': vcmd_percentage}
+        # **MODIFIED: Added validation command for HHMM time format**
+        vcmd_time_hhmm = (self.root.register(self.validate_time_hhmm_format), '%P')
+        self.validation_commands = {
+            'percentage': vcmd_percentage,
+            'time_hhmm': vcmd_time_hhmm # Use this for time entries now
+        }
 
     def initialize_port_cache(self):
         """Initialize the serial port cache"""
@@ -721,12 +727,14 @@ class LEDControlGUI:
              # return # Or maybe return to prevent further errors
 
         validate_percent_cmd = self.validation_commands['percentage']
+        # **MODIFIED: Use the new time validation command**
+        validate_time_cmd = self.validation_commands['time_hhmm']
         font_normal = self.cached_fonts['normal']
         font_small = self.cached_fonts['small']
         font_sched_label = self.cached_fonts['schedule_label']
         font_sched_entry = self.cached_fonts['schedule_entry']
         entry_width = self.widget_sizes['entry_width']
-        time_entry_width = self.widget_sizes['time_entry_width']
+        time_entry_width = self.widget_sizes['time_entry_width'] # Use updated width
         frame_pad = self.board_layout['frame_padding'] # Use cached value
         pad = self.board_layout['padding'] # Use cached value
         cols_per_page = self.board_layout['cols_per_page'] # Use cached value
@@ -755,6 +763,7 @@ class LEDControlGUI:
 
             # --- Create LED Controls (Optimized inner loop) ---
             for led_row, channel_name in enumerate(LED_CHANNEL_NAMES):
+                # **MODIFIED: Default times now in HHMM format**
                 self.channel_schedules[i][channel_name] = {"on_time": "08:00", "off_time": "00:00", "enabled": False, "active": True}
                 sched_info = self.channel_schedules[i][channel_name] # Reference for defaults
 
@@ -783,18 +792,24 @@ class LEDControlGUI:
                 self.channel_schedule_frames[(i, channel_name)] = schedule_frame
 
                 ttk.Label(schedule_frame, text="On:", font=font_sched_label).grid(column=0, row=0, padx=(5, 2), pady=1, sticky=tk.W)
-                on_time_var = tk.StringVar(value=sched_info['on_time'])
-                on_time_entry = ttk.Entry(schedule_frame, width=time_entry_width, textvariable=on_time_var, font=font_sched_entry)
+                # **MODIFIED: Default StringVar value to HHMM format**
+                on_time_var = tk.StringVar(value=sched_info['on_time'].replace(":", ""))
+                on_time_entry = ttk.Entry(schedule_frame, width=time_entry_width, textvariable=on_time_var, font=font_sched_entry,
+                                          validate='key', validatecommand=validate_time_cmd) # Add validation
                 on_time_entry.grid(column=1, row=0, padx=(0, 5), pady=0) # Reduced pady
                 self.channel_time_entries[(i, channel_name, "on")] = on_time_entry
-                on_time_var.trace_add("write", lambda n, idx, m, b=i, c=channel_name, v=on_time_var, e=on_time_entry: self.validate_time_entry_visual(b, c, "on", v.get(), e))
+                # **MODIFIED: Use validate_time_entry_visual_hhmm**
+                on_time_var.trace_add("write", lambda n, idx, m, b=i, c=channel_name, v=on_time_var, e=on_time_entry: self.validate_time_entry_visual_hhmm(b, c, "on", v.get(), e))
 
                 ttk.Label(schedule_frame, text="Off:", font=font_sched_label).grid(column=0, row=1, padx=(5, 2), pady=1, sticky=tk.W)
-                off_time_var = tk.StringVar(value=sched_info['off_time'])
-                off_time_entry = ttk.Entry(schedule_frame, width=time_entry_width, textvariable=off_time_var, font=font_sched_entry)
+                # **MODIFIED: Default StringVar value to HHMM format**
+                off_time_var = tk.StringVar(value=sched_info['off_time'].replace(":", ""))
+                off_time_entry = ttk.Entry(schedule_frame, width=time_entry_width, textvariable=off_time_var, font=font_sched_entry,
+                                           validate='key', validatecommand=validate_time_cmd) # Add validation
                 off_time_entry.grid(column=1, row=1, padx=(0, 5), pady=0) # Reduced pady
                 self.channel_time_entries[(i, channel_name, "off")] = off_time_entry
-                off_time_var.trace_add("write", lambda n, idx, m, b=i, c=channel_name, v=off_time_var, e=off_time_entry: self.validate_time_entry_visual(b, c, "off", v.get(), e))
+                # **MODIFIED: Use validate_time_entry_visual_hhmm**
+                off_time_var.trace_add("write", lambda n, idx, m, b=i, c=channel_name, v=off_time_var, e=off_time_entry: self.validate_time_entry_visual_hhmm(b, c, "off", v.get(), e))
 
                 schedule_var = tk.BooleanVar(value=sched_info['enabled'])
                 schedule_check = ttk.Checkbutton(schedule_frame, text="En", variable=schedule_var, command=lambda b=i, c=channel_name: self.update_channel_schedule(b, c))
@@ -868,7 +883,7 @@ class LEDControlGUI:
     def _schedule_check_worker(self):
         """Background worker for schedule checking."""
         current_datetime = datetime.now()
-        current_time_str = current_datetime.strftime("%H:%M")
+        current_time_str = current_datetime.strftime("%H:%M") # Keep HH:MM for internal check
         min_time_diff = float('inf')
         boards_needing_update = set()
         num_current_boards = len(self.boards) # Cache length
@@ -879,13 +894,18 @@ class LEDControlGUI:
             channels = self.channel_schedules.get(board_idx, {})
             for channel_name, schedule_info in channels.items():
                 if not schedule_info.get("enabled", False): continue
-                on_time = schedule_info.get("on_time", "")
-                off_time = schedule_info.get("off_time", "")
-                if not self.validate_time_format(on_time) or not self.validate_time_format(off_time): continue
+                # ** Use internal HH:MM format for checking **
+                on_time_hhmm = schedule_info.get("on_time", "")
+                off_time_hhmm = schedule_info.get("off_time", "")
+                # Validate the internal HH:MM format before proceeding
+                if not self.validate_internal_time_format(on_time_hhmm) or not self.validate_internal_time_format(off_time_hhmm):
+                    # print(f"Warn: Invalid internal time format for {board_idx}-{channel_name}: {on_time_hhmm}, {off_time_hhmm}") # Debug
+                    continue
 
                 try:
-                    on_h, on_m = map(int, on_time.split(':'))
-                    off_h, off_m = map(int, off_time.split(':'))
+                    # Parse HH:MM
+                    on_h, on_m = map(int, on_time_hhmm.split(':'))
+                    off_h, off_m = map(int, off_time_hhmm.split(':'))
                     curr_m = current_datetime.hour * 60 + current_datetime.minute
                     on_mins = on_h * 60 + on_m
                     off_mins = off_h * 60 + off_m
@@ -893,7 +913,8 @@ class LEDControlGUI:
                     mins_until_off = (off_mins - curr_m + 1440) % 1440
                     min_time_diff = min(min_time_diff, mins_until_on, mins_until_off)
 
-                    should_be_active = self.is_time_between(current_time_str, on_time, off_time)
+                    # Check using HH:MM
+                    should_be_active = self.is_time_between(current_time_str, on_time_hhmm, off_time_hhmm)
                     cache_key = (board_idx, channel_name)
                     prev_state = self.last_schedule_state.get(cache_key, {}).get("active")
 
@@ -1028,6 +1049,31 @@ class LEDControlGUI:
         self.root.bell() # Only bell on invalid input
         return False
 
+    # ** NEW validation function for HHMM format **
+    def validate_time_hhmm_format(self, P):
+        """Validation command for HHMM time entries."""
+        if P == "": return True # Allow empty
+        # Check length and if it matches the HHMM pattern
+        if len(P) <= 4 and bool(TIME_PATTERN.match(P.ljust(4, '0'))): # Pad with 0 for partial check
+             # Allow typing up to 4 digits if they are potentially valid
+             if len(P) < 4: return True
+             # If 4 digits, perform full validation
+             return bool(TIME_PATTERN.match(P))
+        self.root.bell()
+        return False
+
+    # ** NEW helper to validate internal HH:MM format **
+    def validate_internal_time_format(self, time_str_hhmm):
+        """Validate internal HH:MM time format."""
+        if not isinstance(time_str_hhmm, str): return False
+        parts = time_str_hhmm.split(':')
+        if len(parts) != 2: return False
+        try:
+            h, m = int(parts[0]), int(parts[1])
+            return 0 <= h <= 23 and 0 <= m <= 59
+        except ValueError:
+            return False
+
     def apply_all_settings(self):
         """Apply current UI settings to all connected boards."""
         if not self.boards: messagebox.showwarning("No Boards", "No boards available."); return
@@ -1089,7 +1135,7 @@ class LEDControlGUI:
 
         # --- Process each board ---
         try:
-            current_time_for_batch = datetime.now().strftime("%H:%M")
+            current_time_for_batch = datetime.now().strftime("%H:%M") # HH:MM format
             for board_idx in board_indices:
                 if board_idx not in all_ui_data or board_idx >= len(self.boards): continue
                 board = self.boards[board_idx]
@@ -1099,10 +1145,11 @@ class LEDControlGUI:
                 for channel_idx, channel_name in enumerate(LED_CHANNEL_NAMES):
                     schedule_info = self.channel_schedules.get(board_idx, {}).get(channel_name, {})
                     if schedule_info.get("enabled", False):
-                        on_time = schedule_info.get("on_time", "")
-                        off_time = schedule_info.get("off_time", "")
-                        if self.validate_time_format(on_time) and self.validate_time_format(off_time):
-                            if self.is_time_between(current_time_for_batch, on_time, off_time):
+                        # Use internal HH:MM format for check
+                        on_time_hhmm = schedule_info.get("on_time", "")
+                        off_time_hhmm = schedule_info.get("off_time", "")
+                        if self.validate_internal_time_format(on_time_hhmm) and self.validate_internal_time_format(off_time_hhmm):
+                            if self.is_time_between(current_time_for_batch, on_time_hhmm, off_time_hhmm):
                                 # Apply UI value only if within schedule
                                 percentage = ui_percentages.get(channel_name, 0)
                                 final_duties[channel_idx] = DUTY_CYCLE_LOOKUP.get(percentage, 0)
@@ -1181,29 +1228,23 @@ class LEDControlGUI:
                 sched_data = {}
                 board_schedules = self.channel_schedules.get(idx, {})
                 for cn in LED_CHANNEL_NAMES:
-                    intensity = 0; on_t = "08:00"; off_t = "00:00"; enabled = False
+                    intensity = 0
+                    # **MODIFIED: Read internal HH:MM format for export**
+                    on_t = "08:00"; off_t = "00:00"; enabled = False
                     entry = self.led_entries.get((idx, cn))
                     if entry:
                         try:
                             if entry.winfo_exists(): intensity = int(entry.get())
                         except (ValueError, tk.TclError): pass
                     board_data["intensity"][cn] = max(0, min(100, intensity))
-                    # Get schedule from UI if possible
+
                     sched_info = board_schedules.get(cn, {})
-                    on_t = sched_info.get("on_time", on_t)
-                    off_t = sched_info.get("off_time", off_t)
-                    enabled = sched_info.get("enabled", enabled)
-                    on_entry = self.channel_time_entries.get((idx, cn, "on"))
-                    off_entry = self.channel_time_entries.get((idx, cn, "off"))
-                    en_var = self.channel_schedule_vars.get((idx, cn))
-                    try:
-                        if on_entry and on_entry.winfo_exists(): on_t = on_entry.get()
-                        if off_entry and off_entry.winfo_exists(): off_t = off_entry.get()
-                        if en_var: enabled = en_var.get()
-                    except tk.TclError: pass
-                    sched_data[cn] = {"on_time": on_t if self.validate_time_format(on_t) else "08:00",
-                                      "off_time": off_t if self.validate_time_format(off_t) else "00:00",
-                                      "enabled": bool(enabled)}
+                    on_t = sched_info.get("on_time", "08:00") # Get HH:MM from internal store
+                    off_t = sched_info.get("off_time", "00:00") # Get HH:MM from internal store
+                    enabled = sched_info.get("enabled", False) # Get bool from internal store
+                    # No need to read from UI widgets here for export
+
+                    sched_data[cn] = {"on_time": on_t, "off_time": off_t, "enabled": bool(enabled)}
                 board_data["schedule"] = sched_data
                 settings_to_export[key] = board_data
             # print("Export: Collection complete.") # Less verbose
@@ -1275,16 +1316,27 @@ class LEDControlGUI:
                      if board_idx not in self.channel_schedules: self.channel_schedules[board_idx] = {}
                      for cn, chan_sched in board_cfg["schedule"].items():
                           if cn in LED_CHANNELS and isinstance(chan_sched, dict):
-                               on_t = chan_sched.get("on_time", "08:00"); off_t = chan_sched.get("off_time", "00:00")
+                               # Read HH:MM from file
+                               on_t_hhmm = chan_sched.get("on_time", "08:00")
+                               off_t_hhmm = chan_sched.get("off_time", "00:00")
                                en = bool(chan_sched.get("enabled", False))
-                               if not self.validate_time_format(on_t): on_t = "08:00"
-                               if not self.validate_time_format(off_t): off_t = "00:00"
-                               self.channel_schedules.setdefault(board_idx, {}).setdefault(cn, {}).update({"on_time": on_t, "off_time": off_t, "enabled": en})
+                               # Validate HH:MM before storing/using
+                               if not self.validate_internal_time_format(on_t_hhmm): on_t_hhmm = "08:00"
+                               if not self.validate_internal_time_format(off_t_hhmm): off_t_hhmm = "00:00"
+
+                               # Store HH:MM internally
+                               self.channel_schedules.setdefault(board_idx, {}).setdefault(cn, {}).update({"on_time": on_t_hhmm, "off_time": off_t_hhmm, "enabled": en})
+
+                               # Convert to HHMM for UI display
+                               on_t_ui = on_t_hhmm.replace(":", "")
+                               off_t_ui = off_t_hhmm.replace(":", "")
+
+                               # Update UI Widgets safely
                                on_e = self.channel_time_entries.get((board_idx, cn, "on")); off_e = self.channel_time_entries.get((board_idx, cn, "off"))
                                en_v = self.channel_schedule_vars.get((board_idx, cn))
                                try:
-                                    if on_e and on_e.winfo_exists(): on_e.delete(0, tk.END); on_e.insert(0, on_t)
-                                    if off_e and off_e.winfo_exists(): off_e.delete(0, tk.END); off_e.insert(0, off_t)
+                                    if on_e and on_e.winfo_exists(): on_e.delete(0, tk.END); on_e.insert(0, on_t_ui)
+                                    if off_e and off_e.winfo_exists(): off_e.delete(0, tk.END); off_e.insert(0, off_t_ui)
                                     if en_v: en_v.set(en)
                                     applied_cnt += 1
                                except tk.TclError: pass
@@ -1311,15 +1363,37 @@ class LEDControlGUI:
              data = {'applied_count': applied_cnt, 'fan_settings_found': fan_found}
              self.gui_queue.put(FileOperationComplete('import', True, msg, data))
 
-    def validate_time_format(self, time_str):
-        """Validate HH:MM format."""
-        return isinstance(time_str, str) and bool(TIME_PATTERN.match(time_str))
+    # ** RENAMED: This validates the HHMM input format **
+    def validate_time_hhmm_format(self, P):
+        """Validation command for HHMM time entries."""
+        if P == "": return True # Allow empty
+        # Use the global TIME_PATTERN which now matches HHMM
+        if len(P) <= 4 and TIME_PATTERN.match(P.ljust(4, '0')):
+             if len(P) < 4: return True # Allow partial input if potentially valid
+             return bool(TIME_PATTERN.match(P)) # Full check for 4 digits
+        self.root.bell()
+        return False
 
-    def validate_time_entry_visual(self, board_idx, channel_name, entry_type, new_value, entry_widget):
-        """Visual validation for time entries."""
+    # ** RENAMED: This validates the internal HH:MM format **
+    def validate_internal_time_format(self, time_str_hhmm):
+        """Validate internal HH:MM time format."""
+        if not isinstance(time_str_hhmm, str): return False
+        parts = time_str_hhmm.split(':')
+        if len(parts) != 2: return False
+        try:
+            h, m = int(parts[0]), int(parts[1])
+            return 0 <= h <= 23 and 0 <= m <= 59
+        except ValueError:
+            return False
+
+    # ** RENAMED: Visual validation for HHMM input **
+    def validate_time_entry_visual_hhmm(self, board_idx, channel_name, entry_type, new_value_hhmm, entry_widget):
+        """Visual validation for HHMM time entries."""
         try:
             if entry_widget.winfo_exists():
-                color = self.cached_colors['normal'] if self.validate_time_format(new_value) else self.cached_colors['error']
+                # Use the HHMM validation function
+                is_valid = self.validate_time_hhmm_format(new_value_hhmm)
+                color = self.cached_colors['normal'] if is_valid else self.cached_colors['error']
                 entry_widget.config(foreground=color)
         except tk.TclError: pass # Widget destroyed
 
@@ -1359,17 +1433,32 @@ class LEDControlGUI:
 
         try:
             is_enabled = sched_var.get()
-            on_t = on_entry.get() if on_entry and on_entry.winfo_exists() else sched_info["on_time"]
-            off_t = off_entry.get() if off_entry and off_entry.winfo_exists() else sched_info["off_time"]
-            on_valid = self.validate_time_format(on_t); off_valid = self.validate_time_format(off_t)
+            # Get HHMM values from UI
+            on_t_ui = on_entry.get() if on_entry and on_entry.winfo_exists() else sched_info["on_time"].replace(":", "")
+            off_t_ui = off_entry.get() if off_entry and off_entry.winfo_exists() else sched_info["off_time"].replace(":", "")
+            # Validate HHMM format
+            on_valid = self.validate_time_hhmm_format(on_t_ui)
+            off_valid = self.validate_time_hhmm_format(off_t_ui)
 
             if is_enabled and (not on_valid or not off_valid):
-                messagebox.showerror("Invalid Time", f"Cannot enable schedule for {channel_name} with invalid time (HH:MM).")
+                messagebox.showerror("Invalid Time", f"Cannot enable schedule for {channel_name} with invalid time (HHMM).")
                 sched_var.set(False); is_enabled = False
+                # Keep internal times as they were or reset to default? Reset for safety.
+                on_t_hhmm = "08:00"
+                off_t_hhmm = "00:00"
+            elif on_valid and off_valid:
+                # Convert valid HHMM to HH:MM for internal storage
+                on_t_hhmm = f"{on_t_ui[:2]}:{on_t_ui[2:]}"
+                off_t_hhmm = f"{off_t_ui[:2]}:{off_t_ui[2:]}"
+            else: # If not enabled or times became invalid after typing
+                on_t_hhmm = "08:00"
+                off_t_hhmm = "00:00"
 
-            sched_info["on_time"] = on_t if on_valid else "08:00"
-            sched_info["off_time"] = off_t if off_valid else "00:00"
+            # Update internal schedule data with HH:MM
+            sched_info["on_time"] = on_t_hhmm
+            sched_info["off_time"] = off_t_hhmm
             sched_info["enabled"] = is_enabled
+
             chamber = self.boards[board_idx].chamber_number or (board_idx + 1)
             action = "enabled" if is_enabled else "disabled"
             # print(f"Schedule {action} for {chamber}-{channel_name}") # Less verbose
@@ -1378,15 +1467,18 @@ class LEDControlGUI:
         except tk.TclError: print(f"Warn: Widget error updating schedule {board_idx}-{channel_name}")
         except Exception as e: print(f"Error updating schedule {board_idx}-{channel_name}: {e}")
 
-    def is_time_between(self, check_time_str, start_time_str, end_time_str):
-        """Check if check_time is between start and end (exclusive end)."""
+    def is_time_between(self, check_time_str, start_time_str_hhmm, end_time_str_hhmm):
+        """Check if check_time (HH:MM) is between start/end (HH:MM) (exclusive end)."""
         try:
+            # Parse check time (HH:MM)
             ch, cm = map(int, check_time_str.split(':')); check_m = ch * 60 + cm
-            sh, sm = map(int, start_time_str.split(':')); start_m = sh * 60 + sm
-            eh, em = map(int, end_time_str.split(':')); end_m = eh * 60 + em
+            # Parse start/end times (HH:MM)
+            sh, sm = map(int, start_time_str_hhmm.split(':')); start_m = sh * 60 + sm
+            eh, em = map(int, end_time_str_hhmm.split(':')); end_m = eh * 60 + em
+
             if start_m == end_m: return True # Assume 24h if same
-            if start_m < end_m: return start_m <= check_m < end_m
-            else: return check_m >= start_m or check_m < end_m
+            if start_m < end_m: return start_m <= check_m < end_m # Normal interval
+            else: return check_m >= start_m or check_m < end_m # Wraparound interval
         except: return False # Invalid format -> False
 
     def process_gui_queue(self):
