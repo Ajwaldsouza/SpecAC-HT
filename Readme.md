@@ -118,7 +118,7 @@ specac-ht/
 
 ## **Chamber Mapping**
 
-The system maps serial numbers to chamber numbers using the `microcontroller_serial.txt` file with the format:
+The system maps serial numbers to chamber numbers using the `microcontroller_serial.txt` file with the format:
 
 ```r
 chamber_number:serial_number
@@ -128,9 +128,19 @@ For example:
 
 ```r
 1:4150323038323713000a8f9b56034378
-
 2:4150323038323710003e0d9b56034378
 ```
+
+When boards are detected without a mapping entry, they will be assigned a temporary ID (1000+) and a warning will be displayed.
+
+## **Scheduling**
+
+The system supports independent scheduling for each LED channel:
+
+- **Time Format**: Enter times in HHMM format (e.g., 0800 for 8:00 AM)
+- **Per-Channel Control**: Each LED channel can have its own ON/OFF schedule
+- **Visual Indicators**: Active channels are highlighted in green, inactive in red
+- **Enable/Disable**: Use the checkbox to activate scheduling for each channel
 
 ## **Troubleshooting**
 
@@ -138,6 +148,8 @@ For example:
 - **Communication Errors**: Check USB connections and verify the microcontroller is running properly
 - **LED Not Responding**: Verify the wiring between the PCA9685 and LED channels
 - **Fan Not Responding**: Check PWM and tachometer connections
+- **Invalid Time Format**: Ensure times are entered in HHMM format (e.g., 0800, 1730)
+- **Settings Not Applying**: Use the "Apply" button for individual chambers or "Apply All" for all chambers
 
 ---
 
