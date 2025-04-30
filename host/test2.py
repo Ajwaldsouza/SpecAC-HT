@@ -394,6 +394,7 @@ class LEDControlGUI:
         # --- End Core Data Structures ---
 
         # --- Caching and Setup ---
+        self.cmd_messages = CMD_MESSAGES # **FIXED: Assign global dict to instance attribute**
         self.create_font_cache()
         self.create_color_cache() # Call before setup_styles
         self.setup_styles()
@@ -425,7 +426,7 @@ class LEDControlGUI:
             self.style.configure('Header.TLabel', font=('Helvetica', 16, 'bold'))
             self.style.configure('Subheader.TLabel', font=('Helvetica', 12, 'bold'))
 
-        if hasattr(self, 'cached_colors'): # <<< **FIXED: Added check here**
+        if hasattr(self, 'cached_colors'):
             self.style.configure('Success.TLabel', foreground=self.cached_colors['success'])
             self.style.configure('Error.TLabel', foreground=self.cached_colors['error'])
             self.style.configure('Warning.TLabel', foreground=self.cached_colors['warning'])
